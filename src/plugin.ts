@@ -1,9 +1,9 @@
-import type { Plugin } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { createServer, type Server } from "http";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,26 +20,49 @@ const INSTANCE_SESSION_PREFIX = "plugin:";
 const CLAIM_TTL_MS = 5 * 60 * 1000;
 
 let cachedVersion: string | null = null;
-let processSessionId = `${INSTANCE_SESSION_PREFIX}${Math.random().toString(36).slice(2)}`;
-let pluginClient: any = null;
-let pluginDirectory = process.cwd();
-let pluginSessionLabel = buildSessionLabel(pluginDirectory);
-let listeningPort: number | null = null;
-let httpServer: Server | null = null;
-let serverStartupStatus: "not-started" | "starting" | "listening" | "failed" = "not-started";
-let serverStartupError: string | null = null;
-const bindFailures: Array<{ port: number; code?: string; message: string }> = [];
-let lastAnnotationStatus: Record<string, any> | null = null;
-let activeOpencodeSessionId: string | null = null;
-let lastExtensionVersion: string | null = null;
-const sessionTitles = new Map<string, string>();
-const claims = new Map<number, { sessionId: string; claimedAt: string; lastSeenAt: string; extensionVersion?: string }>();
 
-function fallbackSession(): { id: string; title: string; directory: string; status: string } {
+interface PluginRuntime {
+  context: Plugin.Context;
+  sessionId: string;
+  directory: string;
+  label: string;
+  listeningPort: number | null;
+  server: Server | null;
+  startupStatus: "not-started" | "starting" | "listening" | "failed";
+  startupError: string | null;
+  bindFailures: Array<{ port: number; code?: string; message: string }>;
+  lastAnnotationStatus: Record<string, unknown> | null;
+  activeSessionId: string | null;
+  lastExtensionVersion: string | null;
+  sessionTitles: Map<string, string>;
+  claims: Map<number, { sessionId: string; claimedAt: string; lastSeenAt: string; extensionVersion?: string }>;
+}
+
+function createPluginRuntime(context: Plugin.Context): PluginRuntime {
+  const directory = context.location.directory || process.cwd();
   return {
-    id: processSessionId,
-    title: pluginSessionLabel,
-    directory: pluginDirectory,
+    context,
+    sessionId: `${INSTANCE_SESSION_PREFIX}${Math.random().toString(36).slice(2)}`,
+    directory,
+    label: buildSessionLabel(directory),
+    listeningPort: null,
+    server: null,
+    startupStatus: "not-started",
+    startupError: null,
+    bindFailures: [],
+    lastAnnotationStatus: null,
+    activeSessionId: null,
+    lastExtensionVersion: null,
+    sessionTitles: new Map(),
+    claims: new Map(),
+  };
+}
+
+function fallbackSession(runtime: PluginRuntime): { id: string; title: string; directory: string; status: string } {
+  return {
+    id: runtime.sessionId,
+    title: runtime.label,
+    directory: runtime.directory,
     status: "open",
   };
 }
@@ -140,54 +163,26 @@ function buildAnnotationPrompt(annotation: any): string {
   ].join("\n");
 }
 
-function isExplicitFalse(value: any): boolean {
-  return value === false || value?.data === false;
+function setLastAnnotationStatus(runtime: PluginRuntime, status: Record<string, unknown>): void {
+  runtime.lastAnnotationStatus = { ...status, time: new Date().toISOString() };
 }
 
-function unwrapClientResult(result: any, action: string): any {
-  if (!result || typeof result !== "object") return result;
-
-  if ("error" in result && result.error) {
-    const err = result.error;
-    const message =
-      (typeof err?.message === "string" && err.message) ||
-      (typeof err?.error === "string" && err.error) ||
-      (typeof err === "string" && err) ||
-      `OpenCode ${action} failed`;
-    throw new Error(message);
-  }
-
-  if ("data" in result) return result.data;
-  return result;
-}
-
-function setLastAnnotationStatus(status: Record<string, any>): void {
-  lastAnnotationStatus = { ...status, time: new Date().toISOString() };
-}
-
-function applySessionTitle(sessionId: string, title: string): void {
+function applySessionTitle(runtime: PluginRuntime, sessionId: string, title: string): void {
   const next = String(title || "").trim();
   if (!sessionId || !next) return;
-  sessionTitles.set(sessionId, next);
-  if (activeOpencodeSessionId === sessionId) {
-    pluginSessionLabel = next;
+  runtime.sessionTitles.set(sessionId, next);
+  if (runtime.activeSessionId === sessionId) {
+    runtime.label = next;
   }
 }
 
-function parseSessionTitle(response: any): { id: string; title: string } | null {
-  const info = response?.data || response;
-  if (!info || typeof info !== "object") return null;
-  if (typeof info.id !== "string" || typeof info.title !== "string") return null;
-  return { id: info.id, title: info.title };
-}
-
-function rememberClaim(tabId: number, sessionId: string, extensionVersion?: string): void {
+function rememberClaim(runtime: PluginRuntime, tabId: number, sessionId: string, extensionVersion?: string): void {
   const key = Number(tabId);
   const now = new Date().toISOString();
-  const prior = claims.get(key);
+  const prior = runtime.claims.get(key);
   const cleanVersion = cleanExtensionVersion(extensionVersion);
-  if (cleanVersion) lastExtensionVersion = cleanVersion;
-  claims.set(key, {
+  if (cleanVersion) runtime.lastExtensionVersion = cleanVersion;
+  runtime.claims.set(key, {
     sessionId,
     claimedAt: prior?.claimedAt || now,
     lastSeenAt: now,
@@ -199,82 +194,70 @@ function cleanExtensionVersion(value: any): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function pruneStaleClaims(): void {
+function pruneStaleClaims(runtime: PluginRuntime): void {
   const cutoff = Date.now() - CLAIM_TTL_MS;
-  for (const [tabId, claim] of claims.entries()) {
+  for (const [tabId, claim] of runtime.claims.entries()) {
     const lastSeen = Date.parse(claim.lastSeenAt);
     if (!Number.isFinite(lastSeen) || lastSeen < cutoff) {
-      claims.delete(tabId);
+      runtime.claims.delete(tabId);
     }
   }
 }
 
-async function ensureSessionTitle(sessionId: string): Promise<void> {
-  if (!sessionId || sessionTitles.has(sessionId) || !pluginClient?.session?.get) return;
+async function ensureSessionTitle(runtime: PluginRuntime, sessionId: string): Promise<void> {
+  if (!sessionId || runtime.sessionTitles.has(sessionId)) return;
   try {
-    const response = await pluginClient.session.get({
-      path: { id: sessionId },
-      query: { directory: pluginDirectory },
+    const session = await runtime.context.session.get({ sessionID: sessionId });
+    if (session.title) applySessionTitle(runtime, session.id, session.title);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logDebug(`session lookup failed session=${sessionId} error=${message}`);
+  }
+}
+
+async function listOpenCodeSessions(
+  runtime: PluginRuntime
+): Promise<Array<{ id: string; title: string; directory?: string; status: string }>> {
+  const response = await runtime.context.session.list({ directory: runtime.directory });
+  const sessions = response.data
+    .filter((item) => !item.time.archived)
+    .map((item) => {
+      const title = item.title?.trim() || `Session ${item.id.slice(0, 8)}`;
+      applySessionTitle(runtime, item.id, title);
+      return {
+        id: item.id,
+        title,
+        directory: item.location.directory,
+        status: "open",
+        updatedAt: item.time.updated || item.time.created,
+      };
     });
-    const parsed = parseSessionTitle(response);
-    if (parsed) applySessionTitle(parsed.id, parsed.title);
-  } catch {
-    // ignore
-  }
-}
 
-async function listOpenCodeSessions(): Promise<Array<{ id: string; title: string; directory?: string; status: string }>> {
-  if (!pluginClient?.session?.list) {
-    return [fallbackSession()];
-  }
+  if (!sessions.length) return [fallbackSession(runtime)];
 
-  try {
-    const response = await pluginClient.session.list({ query: { directory: pluginDirectory } });
-    const rows = Array.isArray(response?.data) ? response.data : Array.isArray(response) ? response : [];
-    const sessions = rows
-      .filter((item: any) => typeof item?.id === "string" && !item?.time?.archived)
-      .map((item: any) => {
-        const title = typeof item?.title === "string" && item.title.trim() ? item.title.trim() : `Session ${item.id.slice(0, 8)}`;
-        applySessionTitle(item.id, title);
-        const updatedAt =
-          Number(item?.time?.updated ?? item?.time?.created ?? item?.updatedAt ?? item?.createdAt) || 0;
-        return {
-          id: item.id,
-          title,
-          directory: typeof item?.directory === "string" ? item.directory : pluginDirectory,
-          status: "open",
-          updatedAt,
-        };
-      });
-
-    if (!sessions.length) return [fallbackSession()];
-
-    if (activeOpencodeSessionId) {
-      const active = sessions.find((session: { id: string }) => session.id === activeOpencodeSessionId);
-      if (active) {
-        const { updatedAt: _updatedAt, ...rest } = active;
-        return [rest];
-      }
-
-      const activeTitle = sessionTitles.get(activeOpencodeSessionId);
-      if (activeTitle) {
-        return [
-          {
-            id: activeOpencodeSessionId,
-            title: activeTitle,
-            directory: pluginDirectory,
-            status: "open",
-          },
-        ];
-      }
+  if (runtime.activeSessionId) {
+    const active = sessions.find((session) => session.id === runtime.activeSessionId);
+    if (active) {
+      const { updatedAt: _updatedAt, ...rest } = active;
+      return [rest];
     }
 
-    sessions.sort((a: { updatedAt: number }, b: { updatedAt: number }) => b.updatedAt - a.updatedAt);
-    const { updatedAt: _updatedAt, ...latest } = sessions[0];
-    return [latest];
-  } catch {
-    return [fallbackSession()];
+    const activeTitle = runtime.sessionTitles.get(runtime.activeSessionId);
+    if (activeTitle) {
+      return [
+        {
+          id: runtime.activeSessionId,
+          title: activeTitle,
+          directory: runtime.directory,
+          status: "open",
+        },
+      ];
+    }
   }
+
+  sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  const { updatedAt: _updatedAt, ...latest } = sessions[0];
+  return [latest];
 }
 
 function json(res: any, statusCode: number, body: any, origin?: string): void {
@@ -304,20 +287,15 @@ async function readJsonBody(req: any): Promise<any> {
   });
 }
 
-function listClaims(): Array<Record<string, any>> {
-  pruneStaleClaims();
-  return Array.from(claims.entries())
+function listClaims(runtime: PluginRuntime): Array<Record<string, unknown>> {
+  pruneStaleClaims(runtime);
+  return Array.from(runtime.claims.entries())
     .map(([tabId, info]) => ({ tabId, ...info }))
     .sort((a, b) => a.tabId - b.tabId);
 }
 
-async function queueAnnotationPrompt(sessionId: string, annotation: any): Promise<void> {
-  if (!pluginClient) {
-    setLastAnnotationStatus({ ok: false, sessionId, error: "No OpenCode client is available" });
-    throw new Error("No OpenCode client is available");
-  }
-
-  setLastAnnotationStatus({
+async function queueAnnotationPrompt(runtime: PluginRuntime, sessionId: string, annotation: any): Promise<void> {
+  setLastAnnotationStatus(runtime, {
     ok: null,
     sessionId,
     phase: "received",
@@ -326,6 +304,7 @@ async function queueAnnotationPrompt(sessionId: string, annotation: any): Promis
 
   let promptText = buildAnnotationPrompt(annotation);
   const screenshot = annotation?.screenshot;
+  let screenshotFile: string | undefined;
   if (screenshot?.dataUrl) {
     mkdirSync(ANNOTATION_DIR, { recursive: true });
     const { mime, bytes } = decodeDataUrl(screenshot.dataUrl);
@@ -333,52 +312,30 @@ async function queueAnnotationPrompt(sessionId: string, annotation: any): Promis
     const stem = sanitizeFileStem(annotation?.page?.title || annotation?.element?.tag || "annotation");
     const filePath = join(ANNOTATION_DIR, `${Date.now()}-${stem}.${ext}`);
     writeFileSync(filePath, bytes);
+    screenshotFile = filePath;
     promptText += `\n\nScreenshot: ${filePath}`;
   }
 
-  const promptBody = { parts: [{ type: "text", text: promptText }] };
-
-  if (typeof pluginClient?.session?.promptAsync === "function") {
-    const response = await pluginClient.session.promptAsync({
-      path: { id: sessionId },
-      query: { directory: pluginDirectory },
-      body: promptBody,
+  try {
+    const response = await runtime.context.session.prompt({
+      sessionID: sessionId,
+      text: promptText,
+      files: screenshotFile ? [{ uri: pathToFileURL(screenshotFile).href, name: basename(screenshotFile) }] : undefined,
     });
-    const data = unwrapClientResult(response, "session prompt");
-    if (isExplicitFalse(data)) throw new Error("OpenCode rejected session prompt submission");
-    setLastAnnotationStatus({ ok: true, sessionId, transport: "session.promptAsync", response: data ?? null });
-    return;
-  }
-
-  if (typeof pluginClient?.session?.prompt === "function") {
-    const response = await pluginClient.session.prompt({
-      path: { id: sessionId },
-      query: { directory: pluginDirectory },
-      body: promptBody,
+    setLastAnnotationStatus(runtime, {
+      ok: true,
+      sessionId,
+      transport: "session.prompt",
+      response,
     });
-    const data = unwrapClientResult(response, "session prompt");
-    if (isExplicitFalse(data)) throw new Error("OpenCode rejected session prompt submission");
-    setLastAnnotationStatus({ ok: true, sessionId, transport: "session.prompt", response: data ?? null });
-    return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setLastAnnotationStatus(runtime, { ok: false, sessionId, error: message });
+    throw error;
   }
-
-  const text = promptText;
-
-  const appended = await pluginClient.tui.appendPrompt({
-    query: { directory: pluginDirectory },
-    body: { text },
-  });
-  const appendedData = unwrapClientResult(appended, "tui append prompt");
-  if (isExplicitFalse(appendedData)) throw new Error("OpenCode rejected appending the annotation prompt");
-
-  const submitted = await pluginClient.tui.submitPrompt({ query: { directory: pluginDirectory } });
-  const submittedData = unwrapClientResult(submitted, "tui submit prompt");
-  if (isExplicitFalse(submittedData)) throw new Error("OpenCode rejected submitting the annotation prompt");
-
-  setLastAnnotationStatus({ ok: true, sessionId, transport: "tui", response: appendedData ?? null });
 }
 
-function buildStatus(): Record<string, any> {
+function buildStatus(runtime: PluginRuntime): Record<string, unknown> {
   return {
     app: APP_ID,
     version: getPackageVersion(),
@@ -389,34 +346,34 @@ function buildStatus(): Record<string, any> {
       xdgRuntimeDir: Boolean(process.env.XDG_RUNTIME_DIR),
       uid: typeof process.getuid === "function" ? process.getuid() : null,
     },
-    instanceId: processSessionId,
-    sessionId: processSessionId,
-    opencodeSessionId: activeOpencodeSessionId,
-    label: pluginSessionLabel,
-    directory: pluginDirectory,
+    instanceId: runtime.sessionId,
+    sessionId: runtime.sessionId,
+    opencodeSessionId: runtime.activeSessionId,
+    label: runtime.label,
+    directory: runtime.directory,
     runtimeBaseDir: BASE_DIR,
     annotationDir: ANNOTATION_DIR,
     logPath: LOG_PATH,
     server: {
-      status: serverStartupStatus,
+      status: runtime.startupStatus,
       host: LISTEN_HOST,
-      port: listeningPort,
-      startupError: serverStartupError,
-      bindFailures,
+      port: runtime.listeningPort,
+      startupError: runtime.startupError,
+      bindFailures: runtime.bindFailures,
     },
-    port: listeningPort,
-    lastExtensionVersion,
+    port: runtime.listeningPort,
+    lastExtensionVersion: runtime.lastExtensionVersion,
     claimTtlMs: CLAIM_TTL_MS,
-    claims: listClaims(),
-    lastAnnotation: lastAnnotationStatus,
+    claims: listClaims(runtime),
+    lastAnnotation: runtime.lastAnnotationStatus,
   };
 }
 
-async function startServer(): Promise<void> {
-  if (listeningPort) return;
-  serverStartupStatus = "starting";
-  serverStartupError = null;
-  bindFailures.length = 0;
+async function startServer(runtime: PluginRuntime): Promise<void> {
+  if (runtime.listeningPort) return;
+  runtime.startupStatus = "starting";
+  runtime.startupError = null;
+  runtime.bindFailures.length = 0;
 
   for (let port = PORT_START; port <= PORT_END; port++) {
     const server = createServer(async (req, res) => {
@@ -429,12 +386,12 @@ async function startServer(): Promise<void> {
       try {
         const url = new URL(req.url || "/", `http://${LISTEN_HOST}:${port}`);
         if (req.method === "GET" && url.pathname === "/status") {
-          json(res, 200, buildStatus(), origin);
+          json(res, 200, buildStatus(runtime), origin);
           return;
         }
 
         if (req.method === "GET" && url.pathname === "/sessions") {
-          const sessions = await listOpenCodeSessions();
+          const sessions = await listOpenCodeSessions(runtime);
           json(
             res,
             200,
@@ -453,8 +410,8 @@ async function startServer(): Promise<void> {
           const extensionVersion = body?.extensionVersion;
           if (!Number.isFinite(tabId)) throw new Error("tabId is required");
           if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId is required");
-          await ensureSessionTitle(sessionId);
-          rememberClaim(Number(tabId), sessionId, extensionVersion);
+          await ensureSessionTitle(runtime, sessionId);
+          rememberClaim(runtime, Number(tabId), sessionId, extensionVersion);
           json(res, 200, { ok: true, sessionId }, origin);
           return;
         }
@@ -469,9 +426,9 @@ async function startServer(): Promise<void> {
           if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId is required");
           if (!annotation || typeof annotation !== "object") throw new Error("annotation is required");
 
-          rememberClaim(Number(tabId), sessionId, extensionVersion);
+          rememberClaim(runtime, Number(tabId), sessionId, extensionVersion);
 
-          await queueAnnotationPrompt(sessionId, { ...annotation, tabId: Number(tabId) });
+          await queueAnnotationPrompt(runtime, sessionId, { ...annotation, tabId: Number(tabId) });
           json(res, 200, { ok: true, sessionId }, origin);
           return;
         }
@@ -481,9 +438,9 @@ async function startServer(): Promise<void> {
           const tabId = body?.tabId;
           const extensionVersion = body?.extensionVersion;
           const cleanVersion = cleanExtensionVersion(extensionVersion);
-          if (cleanVersion) lastExtensionVersion = cleanVersion;
+          if (cleanVersion) runtime.lastExtensionVersion = cleanVersion;
           if (!Number.isFinite(tabId)) throw new Error("tabId is required");
-          claims.delete(Number(tabId));
+          runtime.claims.delete(Number(tabId));
           json(res, 200, { ok: true }, origin);
           return;
         }
@@ -497,76 +454,127 @@ async function startServer(): Promise<void> {
     });
 
     const started = await new Promise<boolean>((resolve) => {
-      server.once("error", (error: NodeJS.ErrnoException) => {
+      const onError = (error: NodeJS.ErrnoException) => {
         const failure = {
           port,
           code: error.code,
           message: error.message,
         };
-        bindFailures.push(failure);
+        runtime.bindFailures.push(failure);
         logDebug(`http bind failed port=${port} code=${failure.code || ""} error=${failure.message}`);
         resolve(false);
+      };
+      server.once("error", onError);
+      server.listen(port, LISTEN_HOST, () => {
+        server.off("error", onError);
+        resolve(true);
       });
-      server.listen(port, LISTEN_HOST, () => resolve(true));
     });
 
     if (!started) continue;
-    httpServer = server;
-    listeningPort = port;
-    serverStartupStatus = "listening";
-    logDebug(`http server listening port=${port} session=${processSessionId} label=${JSON.stringify(pluginSessionLabel)}`);
+    runtime.server = server;
+    runtime.listeningPort = port;
+    runtime.startupStatus = "listening";
+    server.on("error", (error: NodeJS.ErrnoException) => {
+      runtime.startupStatus = "failed";
+      runtime.startupError = error.message;
+      logDebug(`http server error port=${port} code=${error.code || ""} error=${error.message}`);
+    });
+    logDebug(`http server listening port=${port} session=${runtime.sessionId} label=${JSON.stringify(runtime.label)}`);
     return;
   }
 
-  serverStartupStatus = "failed";
-  serverStartupError = `Could not bind OpenCode annotation server on ${LISTEN_HOST} ports ${PORT_START}-${PORT_END}`;
-  throw new Error(serverStartupError);
+  runtime.startupStatus = "failed";
+  runtime.startupError = `Could not bind OpenCode annotation server on ${LISTEN_HOST} ports ${PORT_START}-${PORT_END}`;
+  throw new Error(runtime.startupError);
 }
 
-const plugin: Plugin = async (ctx) => {
-  pluginClient = ctx.client;
-  pluginDirectory = ctx.directory || process.cwd();
-  pluginSessionLabel = buildSessionLabel(ctx.worktree || pluginDirectory);
+async function stopServer(runtime: PluginRuntime): Promise<void> {
+  const server = runtime.server;
+  runtime.server = null;
+  runtime.listeningPort = null;
+  runtime.startupStatus = "not-started";
+  runtime.startupError = null;
+  runtime.activeSessionId = null;
+  runtime.label = buildSessionLabel(runtime.directory);
+  runtime.lastExtensionVersion = null;
+  runtime.lastAnnotationStatus = null;
+  runtime.sessionTitles.clear();
+  runtime.claims.clear();
 
-  startServer().catch((error) => {
-    serverStartupStatus = "failed";
-    serverStartupError = error instanceof Error ? error.message : String(error);
-    logDebug(`server startup failed error=${serverStartupError}`);
+  if (!server) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
   });
+}
 
-  return {
-    event: async ({ event }) => {
-      const info = (event as any)?.properties?.info;
-      if ((event as any)?.type === "session.created" || (event as any)?.type === "session.updated") {
-        if (typeof info?.id === "string" && typeof info?.title === "string") {
-          applySessionTitle(info.id, info.title);
-        }
-      }
-      if ((event as any)?.type === "session.deleted" && typeof info?.id === "string") {
-        sessionTitles.delete(info.id);
-        if (activeOpencodeSessionId === info.id) {
-          activeOpencodeSessionId = null;
-          pluginSessionLabel = buildSessionLabel(pluginDirectory);
-        }
-      }
-    },
-    "chat.message": async (input) => {
-      if (!input?.sessionID) return;
-      activeOpencodeSessionId = input.sessionID;
-      if (sessionTitles.has(input.sessionID)) {
-        pluginSessionLabel = sessionTitles.get(input.sessionID) as string;
-        return;
-      }
-      await ensureSessionTitle(input.sessionID);
-    },
-    tool: {
-      chrome_status: {
+export default Plugin.define({
+  id: "opencode-chrome-annotation",
+  async setup(context) {
+    const runtime = createPluginRuntime(context);
+    const controller = new AbortController();
+    const toolRegistration = await context.tool.transform((editor) => {
+      editor.add({
+        name: "chrome_status",
         description: "Report OpenCode Chrome Annotation local server, session, tab claim, and last annotation status.",
-        args: {},
-        execute: async () => JSON.stringify(buildStatus(), null, 2),
-      },
-    },
-  };
-};
+        input: { type: "object", properties: {}, additionalProperties: false },
+        async execute() {
+          return { content: JSON.stringify(buildStatus(runtime), null, 2) };
+        },
+      });
+    });
 
-export default plugin;
+    const eventTask = (async () => {
+      try {
+        for await (const event of context.event.subscribe({ signal: controller.signal })) {
+          switch (event.type) {
+            case "session.created":
+              if (event.data.title) applySessionTitle(runtime, event.data.sessionID, event.data.title);
+              break;
+            case "session.renamed":
+              applySessionTitle(runtime, event.data.sessionID, event.data.title);
+              break;
+            case "session.viewed":
+              runtime.activeSessionId = event.data.sessionID;
+              await ensureSessionTitle(runtime, event.data.sessionID);
+              runtime.label =
+                runtime.sessionTitles.get(event.data.sessionID) || buildSessionLabel(runtime.directory);
+              break;
+            case "session.deleted":
+            case "session.archived":
+              runtime.sessionTitles.delete(event.data.sessionID);
+              if (runtime.activeSessionId === event.data.sessionID) {
+                runtime.activeSessionId = null;
+                runtime.label = buildSessionLabel(runtime.directory);
+              }
+              break;
+          }
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          const message = error instanceof Error ? error.message : String(error);
+          logDebug(`event subscription failed error=${message}`);
+        }
+      }
+    })();
+
+    const cleanup = async () => {
+      controller.abort();
+      try {
+        await stopServer(runtime);
+      } finally {
+        await toolRegistration.dispose();
+        await eventTask;
+      }
+    };
+
+    try {
+      await startServer(runtime);
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
+
+    return cleanup;
+  },
+});
