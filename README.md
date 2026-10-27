@@ -21,7 +21,7 @@ This package uses the OpenCode V2 plugin API and targets OpenCode V2.1.4. V1 `pl
 
 ### Chrome extension installation
 
-A separate Chrome Web Store listing for this distribution has not yet been created. The existing listing with ID `abeihanpaeioklkhioiigklonbomhjfd` belongs to upstream, not this repository.
+A separate Chrome Web Store listing for this distribution has been created and submitted for review. It is still awaiting Chrome Web Store approval, so it is not publicly available and has no store URL to link here yet. The existing listing with ID `abeihanpaeioklkhioiigklonbomhjfd` belongs to upstream, not this repository.
 
 For now, build and load this distribution as an unpacked extension:
 
@@ -52,7 +52,7 @@ The build also generates `extension/`, which can be loaded directly during devel
 
 The extension sends this payload to the selected plugin's local HTTP API at `127.0.0.1:39240-39260`. The plugin saves the screenshot in its local runtime `annotations/` directory and calls `context.session.prompt` with the annotation text and screenshot file attachment. OpenCode then processes that context through your configured model provider, which may be remote. This is not a guarantee of local-only processing.
 
-The plugin does not automatically delete screenshot files. Connection claims use `chrome.storage.session`, with `chrome.storage.local` as a fallback; diagnostic logs may also contain page and connection metadata. Review the [privacy policy draft](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) and your OpenCode/provider settings before submitting sensitive content.
+The plugin does not automatically delete screenshot files. Connection claims use `chrome.storage.session`, with `chrome.storage.local` as a fallback; diagnostic logs may also contain page and connection metadata. Review the [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) and your OpenCode/provider settings before submitting sensitive content.
 
 
 ### Troubleshooting
@@ -108,4 +108,4 @@ bun run build:zip
 
 Report problems or ask repository privacy questions through [GitHub Issues](https://github.com/asumaroks/opencode-chrome-annotation/issues). Issues are public; do not include secrets, private page content, or unredacted screenshots.
 
-The [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) is a draft for review, not a legal compliance guarantee. A new store listing, publisher contact email, and store privacy disclosures still require publisher review and setup. The public issue tracker is a repository contact, not a substitute for the store's publisher email field.
+The [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) is this distribution's published privacy policy, not a legal compliance guarantee. A new store listing has been created and submitted for Chrome Web Store review and is not public until that review is approved; releasing it afterwards is a manual step. The publisher contact email and store privacy disclosures live in the Chrome Web Store publisher account, not in this repository. The public issue tracker is a repository contact, not a substitute for the store's publisher email field.

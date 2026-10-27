@@ -1,10 +1,10 @@
 # Privacy Policy for OpenCode Chrome Annotation
 
-Draft for review — updated: 2026-10-27
+Submitted for Chrome Web Store review — updated: 2026-10-27
 
-This draft describes the independent, modified distribution of OpenCode Chrome Annotation maintained in [asumaroks/opencode-chrome-annotation](https://github.com/asumaroks/opencode-chrome-annotation). It is based on the upstream project by Benjamin Shafii; original authorship and copyright notices are retained under [GPL-3.0-only](LICENSE). It does not describe the upstream Chrome Web Store listing.
+This policy describes the independent, modified distribution of OpenCode Chrome Annotation maintained in [asumaroks/opencode-chrome-annotation](https://github.com/asumaroks/opencode-chrome-annotation). It is based on the upstream project by Benjamin Shafii; original authorship and copyright notices are retained under [GPL-3.0-only](LICENSE). It does not describe the upstream Chrome Web Store listing.
 
-The disclosures below describe the reviewed implementation, not a legal compliance guarantee or confirmation of Chrome Web Store approval. A separate store listing for this distribution has not yet been created.
+The disclosures below describe the reviewed implementation, not a legal compliance guarantee or confirmation of Chrome Web Store approval. A separate store listing for this distribution has been created and submitted for Chrome Web Store review; it is not public until that review is approved.
 
 ## What this extension does
 
@@ -57,10 +57,10 @@ The extension communicates with a plugin bound to the loopback address `127.0.0.
 
 ## Changes to this policy
 
-This draft should be reviewed before publication and updated when data handling changes. Updates will be reflected in the date above.
+This policy was reviewed internally before it was submitted as the privacy policy URL for the Chrome Web Store listing and is updated when data handling changes. Updates will be reflected in the date above.
 
 ## Contact
 
 For repository support or privacy questions, use [GitHub Issues](https://github.com/asumaroks/opencode-chrome-annotation/issues). This is a public contact channel: do not post secrets or personal/confidential content.
 
-This repository contact does not replace any publisher email required by the Chrome Web Store. The publisher must separately configure that contact, review the store's data-category disclosures, and provide an accessible public privacy policy URL before submitting a new listing.
+This repository contact does not replace any publisher email required by the Chrome Web Store. The public privacy policy URL used for the store listing is this file in the repository. The publisher contact email and the store's data-category disclosures are configured in the Chrome Web Store publisher account and are not held in this repository.
