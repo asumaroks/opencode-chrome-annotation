@@ -1,9 +1,10 @@
-# <img src="https://raw.githubusercontent.com/jodusnodus/opencode-chrome-annotation/main/icon.svg" width="60" align="center" /> OpenCode Chrome Annotation
+# <img src="https://raw.githubusercontent.com/asumaroks/opencode-chrome-annotation/main/icon.svg" width="60" align="center" /> OpenCode Chrome Annotation
 
-[![version](https://img.shields.io/npm/v/opencode-chrome-annotation?style=flat&colorA=000000&colorB=000000)](https://npmjs.com/package/opencode-chrome-annotation)
-[![license](https://img.shields.io/npm/l/opencode-chrome-annotation?style=flat&colorA=000000&colorB=000000)](https://github.com/jodusnodus/opencode-chrome-annotation/blob/main/LICENSE)
+[![license](https://img.shields.io/badge/license-GPL--3.0--only-000000?style=flat)](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/LICENSE)
 
 Annotate any page in Chrome and send the screenshot, selected element metadata, and your instruction directly into [OpenCode](https://opencode.ai).
+
+This is an independent, modified distribution maintained by [asumaroks](https://github.com/asumaroks/opencode-chrome-annotation), based on [the upstream project](https://github.com/jodusnodus/opencode-chrome-annotation) by Benjamin Shafii. It is not the upstream Chrome Web Store distribution. Modification notice: 2026-10-27; see [MODIFICATIONS.json](MODIFICATIONS.json). Original authorship and copyright notices are retained, and the project remains licensed under [GPL-3.0-only](LICENSE).
 
 https://github.com/user-attachments/assets/bdee8a15-6720-4e57-b28d-ee6440722b71
 
@@ -18,9 +19,18 @@ This package uses the OpenCode V2 plugin API and targets OpenCode V2.1.4. V1 `pl
 {"plugins":["opencode-chrome-annotation@git+https://github.com/asumaroks/opencode-chrome-annotation.git"]}
 ```
 
-Install the Chrome extension from the Chrome Web Store:
+### Chrome extension installation
 
-https://chromewebstore.google.com/detail/abeihanpaeioklkhioiigklonbomhjfd
+A separate Chrome Web Store listing for this distribution has not yet been created. The existing listing with ID `abeihanpaeioklkhioiigklonbomhjfd` belongs to upstream, not this repository.
+
+For now, build and load this distribution as an unpacked extension:
+
+1. Check out this repository and install dependencies with `bun install`.
+2. Run `bun run build:zip` to create `release/opencode-chrome-annotation-extension.zip`.
+3. Extract the ZIP to a directory you intend to keep.
+4. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the extracted directory containing `manifest.json`.
+
+The build also generates `extension/`, which can be loaded directly during development. Building a ZIP does not publish the extension to the Chrome Web Store.
 
 ## How It Works
 
@@ -36,7 +46,13 @@ https://chromewebstore.google.com/detail/abeihanpaeioklkhioiigklonbomhjfd
 - Your written instruction.
 - The current page URL and title.
 - Selected element metadata such as selector, tag, text, role, aria label, and bounds.
-- A screenshot saved locally by the plugin and referenced in the OpenCode prompt.
+- Viewport dimensions and device pixel ratio.
+- A PNG screenshot of the visible tab, not just the selected element.
+- Routing information including the tab ID, selected session ID, and extension version.
+
+The extension sends this payload to the selected plugin's local HTTP API at `127.0.0.1:39240-39260`. The plugin saves the screenshot in its local runtime `annotations/` directory and calls `context.session.prompt` with the annotation text and screenshot file attachment. OpenCode then processes that context through your configured model provider, which may be remote. This is not a guarantee of local-only processing.
+
+The plugin does not automatically delete screenshot files. Connection claims use `chrome.storage.session`, with `chrome.storage.local` as a fallback; diagnostic logs may also contain page and connection metadata. Review the [privacy policy draft](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) and your OpenCode/provider settings before submitting sensitive content.
 
 
 ### Troubleshooting
@@ -87,3 +103,9 @@ To create the Chrome Web Store upload zip:
 ```bash
 bun run build:zip
 ```
+
+## Support and privacy
+
+Report problems or ask repository privacy questions through [GitHub Issues](https://github.com/asumaroks/opencode-chrome-annotation/issues). Issues are public; do not include secrets, private page content, or unredacted screenshots.
+
+The [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) is a draft for review, not a legal compliance guarantee. A new store listing, publisher contact email, and store privacy disclosures still require publisher review and setup. The public issue tracker is a repository contact, not a substitute for the store's publisher email field.
