@@ -1,0 +1,15 @@
+{
+  "project": "OpenCode Chrome Annotation",
+  "originalAuthor": "Benjamin Shafii",
+  "license": "GPL-3.0-only",
+  "modifiedBy": "asumaroks",
+  "date": "2026-10-27",
+  "sourceRepository": "https://github.com/asumaroks/opencode-chrome-annotation",
+  "sourceSnapshot": "opencode-chrome-annotation-source.zip",
+  "baseCommit": "79eebed20e0d082ebc4791bdf3887b67a5201e9a",
+  "changes": [
+    "Portable extension ZIP packaging with an explicit asset allowlist, GPL license and modification notice",
+    "Regression coverage for builds without npm or zip executables, asset integrity and stale output exclusion",
+    "Repository, issue tracker and homepage metadata target asumaroks; original authorship retained"
+  ]
+}

@@ -4,7 +4,7 @@
   "short_name": "OpenCode Annotation",
   "version": "1.0.1",
   "description": "Annotate pages and send context into your local OpenCode setup",
-  "homepage_url": "https://github.com/jodusnodus/opencode-chrome-annotation",
+  "homepage_url": "https://github.com/asumaroks/opencode-chrome-annotation",
   "permissions": [
     "tabs",
     "activeTab",

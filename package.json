@@ -38,12 +38,12 @@
   "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jodusnodus/opencode-chrome-annotation.git"
+    "url": "git+https://github.com/asumaroks/opencode-chrome-annotation.git"
   },
   "bugs": {
-    "url": "https://github.com/jodusnodus/opencode-chrome-annotation/issues"
+    "url": "https://github.com/asumaroks/opencode-chrome-annotation/issues"
   },
-  "homepage": "https://github.com/jodusnodus/opencode-chrome-annotation#readme",
+  "homepage": "https://github.com/asumaroks/opencode-chrome-annotation#readme",
   "peerDependencies": {
     "@opencode/plugin": "^2.1.4",
     "effect": "^4.0.1"
@@ -54,6 +54,7 @@
     "@types/chrome": "*",
     "bun-types": "*",
     "effect": "4.0.1",
+    "fflate": "0.8.3",
     "typescript": "*"
   }
 }
