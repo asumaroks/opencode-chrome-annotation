@@ -117,6 +117,17 @@ export async function injectConnectionOverlay(tabId: number): Promise<void> {
   }
 }
 
+export async function hideConnectionOverlay(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    func: async () => {
+      document.getElementById("__opc_connection_overlay")?.remove()
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    },
+  })
+}
+
 export async function removeConnectionOverlay(tabId: number): Promise<void> {
   try {
     await chrome.scripting.executeScript({

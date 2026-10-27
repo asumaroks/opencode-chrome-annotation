@@ -2,6 +2,7 @@ import { logExtension, warnExtension } from "./logger.js"
 import { getActiveTab } from "./tabs.js"
 import { postJson, requestSessionState } from "./server-api.js"
 import {
+  hideConnectionOverlay,
   injectConnectionOverlay,
   removeConnectionOverlay,
   showAnnotationError,
@@ -187,11 +188,30 @@ async function shareTab(
   }
 
   logExtension("Capturing shared tab screenshot", { tabId: tab.id, windowId: current.windowId })
+  try {
+    await hideConnectionOverlay(tab.id)
+  } catch (error) {
+    warnExtension("Failed to hide page overlays before tab capture", {
+      tabId: tab.id,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
   const screenshot = await chrome.tabs.captureVisibleTab(current.windowId, { format: "png" })
   logExtension("Captured shared tab screenshot", {
     tabId: tab.id,
     bytesApprox: Math.round((screenshot.length * 3) / 4),
   })
+
+  if (claimedTabs.get(tab.id)) {
+    try {
+      await injectConnectionOverlay(tab.id)
+    } catch (error) {
+      warnExtension("Failed to restore connection overlay after tab capture", {
+        tabId: tab.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 
   let viewport: AnnotationViewport | undefined
   try {
