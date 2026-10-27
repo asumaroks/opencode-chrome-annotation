@@ -12,11 +12,10 @@ https://github.com/user-attachments/assets/bdee8a15-6720-4e57-b28d-ee6440722b71
 
 This package uses the OpenCode V2 plugin API and targets OpenCode V2.1.4. V1 `plugin` configuration is not supported. Add the package to the V2 `plugins` list:
 
+### OpenCode V2 installation
+
 ```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-chrome-annotation@latest"]
-}
+{"plugins":["opencode-chrome-annotation@git+https://github.com/asumaroks/opencode-chrome-annotation.git"]}
 ```
 
 Install the Chrome extension from the Chrome Web Store:
@@ -63,7 +62,7 @@ bun install
 Build the plugin:
 
 ```bash
-bun run build
+bun run build:plugin
 ```
 
 Run the plugin checks:
