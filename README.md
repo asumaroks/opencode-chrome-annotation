@@ -39,6 +39,7 @@ The build also generates `extension/`, which can be loaded directly during devel
 3. Connect the current tab to your OpenCode session from the in-page picker.
 4. Click **Annotate** in the in-page pill.
 5. Select an element, write your instruction, and submit.
+6. To share a tab without annotating, right-click anywhere on the page and choose **Share this tab with OpenCode**. The current tab is sent to your OpenCode session: page URL and title, a screenshot of the visible area, and any text you had selected when you opened the menu. No element selection and no written instruction are included. If the tab is not connected yet, it is connected first; when several sessions are available, the session picker opens in share mode.
 
 
 ### What Gets Sent
@@ -50,7 +51,21 @@ The build also generates `extension/`, which can be loaded directly during devel
 - A PNG screenshot of the visible tab, not just the selected element.
 - Routing information including the tab ID, selected session ID, and extension version.
 
+Tab sharing sends:
+
+- The current page URL and title.
+- A PNG screenshot of the visible tab area.
+- Viewport dimensions and device pixel ratio.
+- Selected text, only when text was selected at the moment the menu item was used.
+- Routing information including the tab ID, selected session ID, and extension version.
+
+Element metadata is not sent when you share a tab, because that flow has no element selection and no written instruction.
+
+The **Share this tab with OpenCode** item is registered through the extension's `contextMenus` permission and is used only for that page menu item.
+
 The extension sends this payload to the selected plugin's local HTTP API at `127.0.0.1:39240-39260`. The plugin saves the screenshot in its local runtime `annotations/` directory and calls `context.session.prompt` with the annotation text and screenshot file attachment. OpenCode then processes that context through your configured model provider, which may be remote. This is not a guarantee of local-only processing.
+
+Both `/annotation` and `/share` reject requests that carry an `http(s)` Origin header with `403`, so a web page cannot drive-by queue a prompt. Requests without an Origin header, and requests from `chrome-extension://` origins, are accepted.
 
 The plugin does not automatically delete screenshot files. Connection claims use `chrome.storage.session`, with `chrome.storage.local` as a fallback; diagnostic logs may also contain page and connection metadata. Review the [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) and your OpenCode/provider settings before submitting sensitive content.
 
@@ -61,6 +76,7 @@ The plugin runs a local HTTP server bound to `127.0.0.1` on ports `39240-39260`.
 - The extension can't start a new session, you need to be in an active OpenCode session to connect.
 - If the extension can't find any session, ask your agent to run `chrome_status` that should give a detailed report.
 - Make sure OpenCode and your Chromium browser exist in the same localhost network (not in seperate containers).
+- If the menu item reports `Update the OpenCode plugin: this version does not support tab sharing`, the installed local plugin is older than the extension. Update the `opencode-chrome-annotation` npm package to a version that supports the `/share` endpoint, then restart OpenCode.
 
 
 ## Development

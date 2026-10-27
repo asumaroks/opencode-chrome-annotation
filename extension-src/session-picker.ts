@@ -1,6 +1,11 @@
 import type { SessionInfo, SessionPickerContext } from "./types.js"
 
-function sessionPickerScript(items: SessionInfo[], context: SessionPickerContext) {
+function sessionPickerScript(
+  items: SessionInfo[],
+  context: SessionPickerContext,
+  intent: "connect" | "share" = "connect",
+  selectionText = ""
+) {
   const h = globalThis.__opc_h!
   const makeDockable = globalThis.__opc_makeDockable!
   if (typeof h !== "function" || typeof makeDockable !== "function") {
@@ -135,7 +140,12 @@ function sessionPickerScript(items: SessionInfo[], context: SessionPickerContext
         on: {
           click: () => {
             try {
-              chrome.runtime.sendMessage({ type: "connect_tab_to_session", session: item })
+              chrome.runtime.sendMessage({
+                type: "connect_tab_to_session",
+                session: item,
+                thenShare: intent === "share",
+                selectionText,
+              })
             } catch {}
             onSelect()
           },
@@ -157,8 +167,8 @@ function sessionPickerScript(items: SessionInfo[], context: SessionPickerContext
         title: "No OpenCode session available",
         text: "The local plugin responded, but it did not report an active OpenCode session for this project.",
         steps: [
-          "Open OpenCode in the project you want to edit",
-          "Make sure the annotation plugin is enabled in that OpenCode config",
+          "Open the OpenCode session that should receive this page",
+          "Make sure the plugin is enabled in that OpenCode config",
           "Restart OpenCode if you just changed the config",
         ],
       }
@@ -191,7 +201,9 @@ function sessionPickerScript(items: SessionInfo[], context: SessionPickerContext
         on: {
           click: () => {
             try {
-              chrome.runtime.sendMessage({ type: "refresh_sessions" })
+              chrome.runtime.sendMessage(
+                intent === "share" ? { type: "refresh_sessions", intent: "share", selectionText } : { type: "refresh_sessions" }
+              )
             } catch {}
           },
         },
@@ -233,7 +245,10 @@ function sessionPickerScript(items: SessionInfo[], context: SessionPickerContext
 
   overlay.appendChild(
     h("div", { style: STYLE.header }, [
-      h("div", { text: "Connect this tab to OpenCode", style: STYLE.title }),
+      h("div", {
+        text: intent === "share" ? "Share this tab with OpenCode" : "Connect this tab to OpenCode",
+        style: STYLE.title,
+      }),
       h("button", {
         style: STYLE.close,
         attrs: { type: "button", "aria-label": "Close session picker" },
@@ -310,7 +325,9 @@ function sessionPickerScript(items: SessionInfo[], context: SessionPickerContext
 export async function showSessionPicker(
   tabId: number,
   sessions: SessionInfo[],
-  context: SessionPickerContext = { instanceCount: sessions.length ? 1 : 0 }
+  context: SessionPickerContext = { instanceCount: sessions.length ? 1 : 0 },
+  intent: "connect" | "share" = "connect",
+  selectionText = ""
 ): Promise<void> {
   await chrome.scripting.executeScript({
     target: { tabId },
@@ -320,7 +337,7 @@ export async function showSessionPicker(
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "ISOLATED",
-    args: [sessions.slice(0, 12), context],
+    args: [sessions.slice(0, 12), context, intent, selectionText],
     func: sessionPickerScript,
   })
 }

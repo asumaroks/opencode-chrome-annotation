@@ -117,6 +117,17 @@ export async function injectConnectionOverlay(tabId: number): Promise<void> {
   }
 }
 
+export async function hideConnectionOverlay(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    func: async () => {
+      document.getElementById("__opc_connection_overlay")?.remove()
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    },
+  })
+}
+
 export async function removeConnectionOverlay(tabId: number): Promise<void> {
   try {
     await chrome.scripting.executeScript({
@@ -131,18 +142,27 @@ export async function removeConnectionOverlay(tabId: number): Promise<void> {
   }
 }
 
-export async function showAnnotationError(tabId: number, message: string): Promise<void> {
+type ToastOptions = {
+  id: string
+  text: string
+  background: string
+  color: string
+  border: string
+  durationMs: number
+}
+
+async function showToast(tabId: number, options: ToastOptions): Promise<void> {
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "ISOLATED",
-    args: [message],
-    func: (errorMessage: string) => {
-      const existing = document.getElementById("__opc_annotation_error")
+    args: [options],
+    func: (toast: ToastOptions) => {
+      const existing = document.getElementById(toast.id)
       if (existing) existing.remove()
 
       const panel = document.createElement("div")
-      panel.id = "__opc_annotation_error"
-      panel.textContent = `OpenCode annotation failed: ${errorMessage}`
+      panel.id = toast.id
+      panel.textContent = toast.text
       panel.style.cssText = [
         "position:fixed",
         "right:16px",
@@ -151,9 +171,9 @@ export async function showAnnotationError(tabId: number, message: string): Promi
         "max-width:360px",
         "padding:12px 14px",
         "border-radius:10px",
-        "background:#7f1d1d",
-        "color:#fee2e2",
-        "border:1px solid rgba(254,202,202,0.45)",
+        `background:${toast.background}`,
+        `color:${toast.color}`,
+        `border:1px solid ${toast.border}`,
         "box-shadow:0 10px 30px rgba(0,0,0,0.35)",
         "font:13px/1.4 ui-sans-serif,system-ui,sans-serif",
         "transform:translateX(calc(100% + 40px))",
@@ -169,7 +189,33 @@ export async function showAnnotationError(tabId: number, message: string): Promi
         panel.style.transform = "translateX(calc(100% + 40px))"
         panel.style.opacity = "0"
         setTimeout(() => panel.remove(), 220)
-      }, 7000)
+      }, toast.durationMs)
     },
+  })
+}
+
+export async function showAnnotationError(
+  tabId: number,
+  message: string,
+  prefix = "OpenCode annotation failed"
+): Promise<void> {
+  await showToast(tabId, {
+    id: "__opc_annotation_error",
+    text: `${prefix}: ${message}`,
+    background: "#7f1d1d",
+    color: "#fee2e2",
+    border: "rgba(254,202,202,0.45)",
+    durationMs: 7000,
+  })
+}
+
+export async function showShareToast(tabId: number, sessionLabel: string): Promise<void> {
+  await showToast(tabId, {
+    id: "__opc_share_toast",
+    text: `Shared with OpenCode: ${sessionLabel || "session"}`,
+    background: "#14532d",
+    color: "#bbf7d0",
+    border: "rgba(34,197,94,0.45)",
+    durationMs: 3000,
   })
 }

@@ -37,6 +37,10 @@ function createMockContext() {
         return session
       },
       async prompt(input) {
+        if (mock.failNextPrompt) {
+          mock.failNextPrompt = false
+          throw new Error("prompt failed")
+        }
         prompts.push(input)
         return { id: `inbox-${prompts.length}` }
       },
@@ -77,11 +81,12 @@ function createMockContext() {
     },
   }
 
-  return {
+  const mock = {
     context,
     tools,
     prompts,
     sessions,
+    failNextPrompt: false,
     get eventSignal() {
       return eventSignal
     },
@@ -100,12 +105,14 @@ function createMockContext() {
       assert.fail("event subscription did not finish processing")
     },
   }
+
+  return mock
 }
 
-async function request(baseUrl, path, method = "GET", body) {
+async function request(baseUrl, path, method = "GET", body, headers = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { "content-type": "application/json", connection: "close" },
+    headers: { "content-type": "application/json", connection: "close", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   return { status: response.status, body: await response.json() }
@@ -225,6 +232,7 @@ test("native V2 entrypoint serves the extension protocol and cleans up on reload
     const toolStatus = JSON.parse((await second.tools.get("chrome_status").execute({})).content)
     assert.notEqual(toolStatus.instanceId, firstInstanceId)
     assert.deepEqual(toolStatus.claims, [])
+    assert.equal(toolStatus.lastShare, null)
   } finally {
     await secondCleanup()
   }
@@ -310,6 +318,186 @@ test("annotation uses the selected older local session and preserves screenshot 
       screenshotPath = fileURLToPath(mock.prompts[0].files[0].uri)
       assert.equal(mock.prompts[0].files[0].name, screenshotPath.split(/[\\/]/).at(-1))
       assert.deepEqual(await readFile(screenshotPath), Buffer.from("Hello"))
+    } finally {
+      if (screenshotPath) await unlink(screenshotPath)
+    }
+  })
+})
+
+test("tab share uses the claimed session and preserves the screenshot", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    let screenshotPath
+    try {
+      await mock.emit({ type: "session.viewed", location: mock.context.location, data: { sessionID: "target-session", idle: 0 } })
+
+      const claim = await request(baseUrl, "/claim", "POST", {
+        tabId: 19,
+        sessionId: "target-session",
+        extensionVersion: "1.0.2",
+      })
+      assert.equal(claim.status, 200)
+      assert.deepEqual(claim.body, { ok: true, sessionId: "target-session" })
+
+      const response = await request(baseUrl, "/share", "POST", {
+        tabId: 19,
+        sessionId: "target-session",
+        extensionVersion: "1.0.2",
+        share: {
+          page: { title: "Shared page", url: "https://shared.test/page" },
+          selectionText: "Selected words",
+          viewport: { width: 1280, height: 720, devicePixelRatio: 2 },
+          screenshot: { mime: "image/png", dataUrl: "data:image/png;base64,SGVsbG8=" },
+        },
+      })
+      assert.equal(response.status, 200)
+      assert.deepEqual(response.body, { ok: true, sessionId: "target-session" })
+      assert.equal(mock.prompts.length, 1)
+      assert.equal(mock.prompts[0].sessionID, "target-session")
+      assert.match(mock.prompts[0].text, /Browser tab shared/)
+      assert.match(mock.prompts[0].text, /https:\/\/shared\.test\/page/)
+      assert.equal(mock.prompts[0].files.length, 1)
+      screenshotPath = fileURLToPath(mock.prompts[0].files[0].uri)
+      assert.deepEqual(await readFile(screenshotPath), Buffer.from("Hello"))
+      assert.doesNotMatch(mock.prompts[0].text, /make the appropriate code change/i)
+      assert.match(mock.prompts[0].text, /wait for (further|your) instructions/i)
+      assert.ok(mock.prompts[0].text.includes(`Screenshot: ${screenshotPath}`))
+
+      const status = await request(baseUrl, "/status")
+      assert.equal(status.body.lastShare.ok, true)
+      assert.equal(status.body.lastShare.transport, "session.prompt")
+
+      const invalidShare = await request(baseUrl, "/share", "POST", { tabId: 19 })
+      assert.equal(invalidShare.status, 400)
+    } finally {
+      if (screenshotPath) await unlink(screenshotPath)
+    }
+  })
+})
+
+test("tab share includes the selected text in the prompt", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    let screenshotPath
+    try {
+      const response = await request(baseUrl, "/share", "POST", {
+        tabId: 20,
+        sessionId: "target-session",
+        share: {
+          page: { title: "Selection page", url: "https://selection.test" },
+          selectionText: "Selected words",
+          screenshot: { dataUrl: "data:image/png;base64,SGVsbG8=" },
+        },
+      })
+      assert.equal(response.status, 200)
+      assert.equal(mock.prompts.length, 1)
+      assert.match(mock.prompts[0].text, /Selected words/)
+      assert.match(mock.prompts[0].text, /Selected text:/)
+      screenshotPath = fileURLToPath(mock.prompts[0].files[0].uri)
+    } finally {
+      if (screenshotPath) await unlink(screenshotPath)
+    }
+  })
+})
+
+test("tab share without a share payload is rejected and queues no prompt", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    const response = await request(baseUrl, "/share", "POST", { tabId: 21, sessionId: "target-session" })
+    assert.equal(response.status, 400)
+    assert.equal(response.body.ok, false)
+    assert.equal(mock.prompts.length, 0)
+  })
+})
+
+test("a failing session.prompt is reported as a failed share", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    mock.failNextPrompt = true
+    const response = await request(baseUrl, "/share", "POST", {
+      tabId: 22,
+      sessionId: "target-session",
+      share: { page: { title: "Failing page", url: "https://failing.test" } },
+    })
+    assert.equal(response.status, 400)
+    assert.equal(response.body.ok, false)
+
+    const status = await request(baseUrl, "/status")
+    assert.equal(status.body.lastShare.ok, false)
+    assert.equal(status.body.lastShare.sessionId, "target-session")
+  })
+})
+
+test("tab share rejects cross-origin requests but keeps the normal path open", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    let screenshotPath
+    try {
+      const blocked = await request(
+        baseUrl,
+        "/share",
+        "POST",
+        {
+          tabId: 23,
+          sessionId: "target-session",
+          share: { page: { title: "Blocked page", url: "https://blocked.test" } },
+        },
+        { origin: "https://evil.test" }
+      )
+      assert.equal(blocked.status, 403)
+      assert.match(blocked.body.error, /cross-origin/)
+      assert.equal(mock.prompts.length, 0)
+      assert.deepEqual((await request(baseUrl, "/status")).body.claims, [])
+
+      const allowed = await request(baseUrl, "/share", "POST", {
+        tabId: 23,
+        sessionId: "target-session",
+        share: {
+          page: { title: "Allowed page", url: "https://allowed.test" },
+          screenshot: { dataUrl: "data:image/png;base64,SGVsbG8=" },
+        },
+      })
+      assert.equal(allowed.status, 200)
+      assert.equal(mock.prompts.length, 1)
+      screenshotPath = fileURLToPath(mock.prompts[0].files[0].uri)
+    } finally {
+      if (screenshotPath) await unlink(screenshotPath)
+    }
+  })
+})
+
+test("annotation rejects cross-origin requests but keeps the normal path open", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    let screenshotPath
+    try {
+      const blocked = await request(
+        baseUrl,
+        "/annotation",
+        "POST",
+        {
+          tabId: 24,
+          sessionId: "target-session",
+          annotation: {
+            comment: "Blocked annotation",
+            page: { title: "Blocked page", url: "https://blocked.test" },
+            screenshot: { dataUrl: "data:image/png;base64,SGVsbG8=" },
+          },
+        },
+        { origin: "https://evil.test" }
+      )
+      assert.equal(blocked.status, 403)
+      assert.deepEqual(blocked.body, { ok: false, error: "cross-origin requests are not allowed" })
+      assert.equal(mock.prompts.length, 0)
+      assert.deepEqual((await request(baseUrl, "/status")).body.claims, [])
+
+      const allowed = await request(baseUrl, "/annotation", "POST", {
+        tabId: 24,
+        sessionId: "target-session",
+        annotation: {
+          comment: "Allowed annotation",
+          page: { title: "Allowed page", url: "https://allowed.test" },
+          screenshot: { dataUrl: "data:image/png;base64,SGVsbG8=" },
+        },
+      })
+      assert.equal(allowed.status, 200)
+      assert.equal(mock.prompts.length, 1)
+      assert.equal(mock.prompts[0].sessionID, "target-session")
+      screenshotPath = fileURLToPath(mock.prompts[0].files[0].uri)
     } finally {
       if (screenshotPath) await unlink(screenshotPath)
     }
