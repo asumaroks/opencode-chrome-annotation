@@ -2,11 +2,17 @@ import assert from "node:assert/strict"
 import { readFile, unlink } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
+import { Host } from "@opencode/plugin/host"
 import plugin from "../dist/plugin.js"
 
 function createMockContext() {
   const tools = new Map()
   const prompts = []
+  const sessions = [
+    { id: "session-old", title: "Older session", time: { created: 1, updated: 1 }, location: { directory: process.cwd() } },
+    { id: "target-session", title: "Target session", time: { created: 2, updated: 2 }, location: { directory: process.cwd() } },
+    { id: "foreign-session", title: "Foreign session", time: { created: 3, updated: 3 }, location: { directory: `${process.cwd()}/foreign` } },
+  ]
   const eventWaiters = []
   let eventSignal
   let toolDisposed = false
@@ -21,25 +27,14 @@ function createMockContext() {
       async list({ directory }) {
         assert.equal(directory, process.cwd())
         return {
-          data: [
-            {
-              id: "session-old",
-              title: "Older session",
-              time: { created: 1, updated: 1 },
-              location: { directory },
-            },
-            {
-              id: "target-session",
-              title: "Target session",
-              time: { created: 2, updated: 2 },
-              location: { directory },
-            },
-          ],
+          data: sessions.filter((session) => session.location.directory === directory),
           cursor: {},
         }
       },
       async get({ sessionID }) {
-        return { id: sessionID, title: "Target session" }
+        const session = sessions.find((session) => session.id === sessionID)
+        if (!session) throw new Error("Session not found")
+        return session
       },
       async prompt(input) {
         prompts.push(input)
@@ -86,6 +81,7 @@ function createMockContext() {
     context,
     tools,
     prompts,
+    sessions,
     get eventSignal() {
       return eventSignal
     },
@@ -93,10 +89,15 @@ function createMockContext() {
       return toolDisposed
     },
     subscribed,
-    emit(event) {
+    async emit(event) {
       const waiter = eventWaiters.shift()
       assert.ok(waiter, "event subscription is waiting for an event")
       waiter(event)
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (eventWaiters.length) return
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      assert.fail("event subscription did not finish processing")
     },
   }
 }
@@ -120,6 +121,10 @@ async function waitForStatus(baseUrl, predicate) {
 }
 
 test("built V2 plugin serves the extension protocol and cleans up on reload", async () => {
+  const entrypoints = Host.resolve({ directory: fileURLToPath(new URL("../", import.meta.url)) })
+  assert.ok(entrypoints.server)
+  const loaded = await Host.load(entrypoints.server)
+  assert.equal(loaded.default, plugin)
   assert.equal(plugin.id, "opencode-chrome-annotation")
   assert.equal(typeof plugin.setup, "function")
 
@@ -152,7 +157,7 @@ test("built V2 plugin serves the extension protocol and cleans up on reload", as
       },
     ])
 
-    first.emit({ type: "session.viewed", data: { sessionID: "target-session" } })
+    await first.emit({ type: "session.viewed", location: first.context.location, data: { sessionID: "target-session", idle: 0 } })
     const activeStatus = await waitForStatus(
       statusUrl,
       (value) => value.opencodeSessionId === "target-session"
@@ -225,4 +230,88 @@ test("built V2 plugin serves the extension protocol and cleans up on reload", as
   }
   assert.equal(second.eventSignal.aborted, true)
   assert.equal(second.toolDisposed, true)
+})
+
+async function withRuntime(run) {
+  const mock = createMockContext()
+  const cleanup = await plugin.setup(mock.context)
+  try {
+    await mock.subscribed
+    const status = JSON.parse((await mock.tools.get("chrome_status").execute({})).content)
+    await run(mock, `http://127.0.0.1:${status.port}`)
+  } finally {
+    await cleanup()
+  }
+}
+
+test("viewing an older local session selects it instead of the newest", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    assert.equal((await request(baseUrl, "/sessions")).body.sessions[0].id, "target-session")
+    await mock.emit({ type: "session.viewed", location: mock.context.location, data: { sessionID: "session-old", idle: 0 } })
+    assert.equal((await request(baseUrl, "/sessions")).body.sessions[0].id, "session-old")
+  })
+})
+
+for (const location of [undefined, { directory: `${process.cwd()}/foreign` }, { directory: process.cwd(), workspaceID: "foreign-workspace" }]) {
+  test(`foreign session view cannot select a target with location ${JSON.stringify(location)}`, async () => {
+    await withRuntime(async (mock, baseUrl) => {
+      await mock.emit({ type: "session.viewed", location: mock.context.location, data: { sessionID: "session-old", idle: 0 } })
+      await mock.emit({ type: "session.renamed", location, data: { sessionID: "foreign-session", title: "Cached foreign title" } })
+      await mock.emit({ type: "session.viewed", location, data: { sessionID: "foreign-session", idle: 0 } })
+      assert.equal((await request(baseUrl, "/status")).body.opencodeSessionId, "session-old")
+      assert.equal((await request(baseUrl, "/sessions")).body.sessions[0].id, "session-old")
+    })
+  })
+}
+
+for (const type of ["session.deleted", "session.archived"]) {
+  test(`${type} clears the active session and excludes it from selection`, async () => {
+    await withRuntime(async (mock, baseUrl) => {
+      await mock.emit({ type: "session.viewed", location: mock.context.location, data: { sessionID: "session-old", idle: 0 } })
+      const index = mock.sessions.findIndex((session) => session.id === "session-old")
+      if (type === "session.deleted") mock.sessions.splice(index, 1)
+      else mock.sessions[index].time.archived = Date.now()
+      await mock.emit({ type, location: mock.context.location, data: { sessionID: "session-old" } })
+      assert.equal((await request(baseUrl, "/status")).body.opencodeSessionId, null)
+      assert.equal((await request(baseUrl, "/sessions")).body.sessions[0].id, "target-session")
+    })
+  })
+}
+
+test("a missing active session is not reconstructed from a cached title", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    await mock.emit({ type: "session.viewed", location: mock.context.location, data: { sessionID: "session-old", idle: 0 } })
+    mock.sessions.splice(mock.sessions.findIndex((session) => session.id === "session-old"), 1)
+    assert.equal((await request(baseUrl, "/sessions")).body.sessions[0].id, "target-session")
+  })
+})
+
+test("annotation uses the selected older local session and preserves screenshot files", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    let screenshotPath
+    try {
+      await mock.emit({ type: "session.viewed", location: mock.context.location, data: { sessionID: "session-old", idle: 0 } })
+      await mock.emit({ type: "session.viewed", location: mock.sessions[2].location, data: { sessionID: "foreign-session", idle: 0 } })
+      const selected = (await request(baseUrl, "/sessions")).body.sessions[0]
+      assert.equal(selected.id, "session-old")
+      const response = await request(baseUrl, "/annotation", "POST", {
+        tabId: 18,
+        sessionId: selected.id,
+        annotation: {
+          comment: "Older local target",
+          screenshot: { dataUrl: "data:image/png;base64,SGVsbG8=" },
+        },
+      })
+      assert.equal(response.status, 200)
+      assert.equal(mock.prompts.length, 1)
+      assert.equal(mock.prompts[0].sessionID, "session-old")
+      assert.match(mock.prompts[0].text, /Older local target/)
+      assert.equal(mock.prompts[0].files.length, 1)
+      screenshotPath = fileURLToPath(mock.prompts[0].files[0].uri)
+      assert.equal(mock.prompts[0].files[0].name, screenshotPath.split(/[\\/]/).at(-1))
+      assert.deepEqual(await readFile(screenshotPath), Buffer.from("Hello"))
+    } finally {
+      if (screenshotPath) await unlink(screenshotPath)
+    }
+  })
 })
