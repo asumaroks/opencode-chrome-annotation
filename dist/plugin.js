@@ -1,0 +1,510 @@
+// src/plugin.ts
+import { Plugin } from "@opencode/plugin";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { basename, dirname, join } from "path";
+import { createServer } from "http";
+import { fileURLToPath, pathToFileURL } from "url";
+var __filename2 = fileURLToPath(import.meta.url);
+var __dirname2 = dirname(__filename2);
+var PACKAGE_JSON_PATH = join(__dirname2, "..", "package.json");
+var BASE_DIR = getRuntimeBaseDir();
+var LOG_PATH = join(BASE_DIR, "plugin.log");
+var ANNOTATION_DIR = join(BASE_DIR, "annotations");
+var PORT_START = 39240;
+var PORT_END = 39260;
+var LISTEN_HOST = "127.0.0.1";
+var APP_ID = "opencode-chrome-annotation";
+var INSTANCE_SESSION_PREFIX = "plugin:";
+var CLAIM_TTL_MS = 5 * 60 * 1000;
+var cachedVersion = null;
+function createPluginRuntime(context) {
+  const directory = context.location.directory || process.cwd();
+  return {
+    context,
+    sessionId: `${INSTANCE_SESSION_PREFIX}${Math.random().toString(36).slice(2)}`,
+    directory,
+    label: buildSessionLabel(directory),
+    listeningPort: null,
+    server: null,
+    startupStatus: "not-started",
+    startupError: null,
+    bindFailures: [],
+    lastAnnotationStatus: null,
+    activeSessionId: null,
+    lastExtensionVersion: null,
+    sessionTitles: new Map,
+    claims: new Map
+  };
+}
+function fallbackSession(runtime) {
+  return {
+    id: runtime.sessionId,
+    title: runtime.label,
+    directory: runtime.directory,
+    status: "open"
+  };
+}
+function getRuntimeBaseDir() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  const candidates = [
+    process.env.XDG_RUNTIME_DIR ? join(process.env.XDG_RUNTIME_DIR, "opencode-chrome-annotation") : null,
+    join(tmpdir(), `opencode-chrome-annotation-${uid ?? "user"}`)
+  ];
+  for (const candidate of candidates) {
+    if (!candidate)
+      continue;
+    try {
+      mkdirSync(candidate, { recursive: true, mode: 448 });
+      return candidate;
+    } catch {}
+  }
+  return join(tmpdir(), `opencode-chrome-annotation-${uid ?? "user"}`);
+}
+function getPackageVersion() {
+  if (cachedVersion)
+    return cachedVersion;
+  try {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
+    if (typeof pkg?.version === "string") {
+      cachedVersion = pkg.version;
+      return pkg.version;
+    }
+  } catch {}
+  cachedVersion = "unknown";
+  return cachedVersion;
+}
+function logDebug(message) {
+  try {
+    appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${message}
+`, "utf8");
+  } catch {}
+}
+function buildSessionLabel(directory) {
+  const name = basename(directory || process.cwd());
+  return name ? `OpenCode: ${name}` : "OpenCode";
+}
+function decodeDataUrl(dataUrl) {
+  const match = String(dataUrl).match(/^data:([^;,]+)?;base64,(.+)$/);
+  if (!match)
+    throw new Error("Annotation screenshot must be a base64 data URL");
+  return {
+    mime: match[1] || "application/octet-stream",
+    bytes: Buffer.from(match[2], "base64")
+  };
+}
+function sanitizeFileStem(value) {
+  return String(value || "annotation").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "annotation";
+}
+function buildAnnotationPrompt(annotation) {
+  const comment = typeof annotation?.comment === "string" ? annotation.comment.trim() : "";
+  const page = annotation?.page || {};
+  const element = annotation?.element || {};
+  const rect = element?.rect || {};
+  const viewport = annotation?.viewport || {};
+  return [
+    "Browser annotation from Chrome",
+    "",
+    "User comment:",
+    comment || "(no comment provided)",
+    "",
+    "Page:",
+    `Title: ${page.title || ""}`,
+    `URL: ${page.url || ""}`,
+    typeof annotation?.tabId === "number" ? `Tab ID: ${annotation.tabId}` : "Tab ID: ",
+    `Viewport: width=${viewport.width ?? ""} height=${viewport.height ?? ""} devicePixelRatio=${viewport.devicePixelRatio ?? ""}`,
+    "",
+    "Selected element:",
+    `Selector: ${element.selector || ""}`,
+    `Tag: ${element.tag || ""}`,
+    `Role: ${element.role || ""}`,
+    `Text: ${element.text || ""}`,
+    `Aria label: ${element.ariaLabel || ""}`,
+    `Rect: x=${rect.x ?? ""} y=${rect.y ?? ""} width=${rect.width ?? ""} height=${rect.height ?? ""}`,
+    "",
+    "Please inspect the screenshot and selected element metadata, then make the appropriate code change."
+  ].join(`
+`);
+}
+function setLastAnnotationStatus(runtime, status) {
+  runtime.lastAnnotationStatus = { ...status, time: new Date().toISOString() };
+}
+function applySessionTitle(runtime, sessionId, title) {
+  const next = String(title || "").trim();
+  if (!sessionId || !next)
+    return;
+  runtime.sessionTitles.set(sessionId, next);
+  if (runtime.activeSessionId === sessionId) {
+    runtime.label = next;
+  }
+}
+function rememberClaim(runtime, tabId, sessionId, extensionVersion) {
+  const key = Number(tabId);
+  const now = new Date().toISOString();
+  const prior = runtime.claims.get(key);
+  const cleanVersion = cleanExtensionVersion(extensionVersion);
+  if (cleanVersion)
+    runtime.lastExtensionVersion = cleanVersion;
+  runtime.claims.set(key, {
+    sessionId,
+    claimedAt: prior?.claimedAt || now,
+    lastSeenAt: now,
+    extensionVersion: cleanVersion || prior?.extensionVersion
+  });
+}
+function cleanExtensionVersion(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+function pruneStaleClaims(runtime) {
+  const cutoff = Date.now() - CLAIM_TTL_MS;
+  for (const [tabId, claim] of runtime.claims.entries()) {
+    const lastSeen = Date.parse(claim.lastSeenAt);
+    if (!Number.isFinite(lastSeen) || lastSeen < cutoff) {
+      runtime.claims.delete(tabId);
+    }
+  }
+}
+async function ensureSessionTitle(runtime, sessionId) {
+  if (!sessionId || runtime.sessionTitles.has(sessionId))
+    return;
+  try {
+    const session = await runtime.context.session.get({ sessionID: sessionId });
+    if (session.title)
+      applySessionTitle(runtime, session.id, session.title);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logDebug(`session lookup failed session=${sessionId} error=${message}`);
+  }
+}
+async function listOpenCodeSessions(runtime) {
+  const response = await runtime.context.session.list({ directory: runtime.directory });
+  const sessions = response.data.filter((item) => !item.time.archived && item.location.directory === runtime.directory).map((item) => {
+    const title = item.title?.trim() || `Session ${item.id.slice(0, 8)}`;
+    applySessionTitle(runtime, item.id, title);
+    return {
+      id: item.id,
+      title,
+      directory: item.location.directory,
+      status: "open",
+      updatedAt: item.time.updated || item.time.created
+    };
+  });
+  if (runtime.activeSessionId) {
+    const active = sessions.find((session) => session.id === runtime.activeSessionId);
+    if (active) {
+      const { updatedAt: _updatedAt, ...rest } = active;
+      return [rest];
+    }
+    runtime.activeSessionId = null;
+    runtime.label = buildSessionLabel(runtime.directory);
+  }
+  if (!sessions.length)
+    return [fallbackSession(runtime)];
+  sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  const { updatedAt: _updatedAt, ...latest } = sessions[0];
+  return [latest];
+}
+function json(res, statusCode, body, origin) {
+  if (origin)
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "content-type");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.statusCode = statusCode;
+  res.end(JSON.stringify(body));
+}
+async function readJsonBody(req) {
+  return await new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => {
+      data += chunk.toString("utf8");
+      if (data.length > 10 * 1024 * 1024)
+        reject(new Error("Request body too large"));
+    });
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+function listClaims(runtime) {
+  pruneStaleClaims(runtime);
+  return Array.from(runtime.claims.entries()).map(([tabId, info]) => ({ tabId, ...info })).sort((a, b) => a.tabId - b.tabId);
+}
+async function queueAnnotationPrompt(runtime, sessionId, annotation) {
+  setLastAnnotationStatus(runtime, {
+    ok: null,
+    sessionId,
+    phase: "received",
+    commentLength: typeof annotation?.comment === "string" ? annotation.comment.length : 0
+  });
+  let promptText = buildAnnotationPrompt(annotation);
+  const screenshot = annotation?.screenshot;
+  let screenshotFile;
+  if (screenshot?.dataUrl) {
+    mkdirSync(ANNOTATION_DIR, { recursive: true });
+    const { mime, bytes } = decodeDataUrl(screenshot.dataUrl);
+    const ext = mime === "image/jpeg" ? "jpg" : mime === "image/webp" ? "webp" : "png";
+    const stem = sanitizeFileStem(annotation?.page?.title || annotation?.element?.tag || "annotation");
+    const filePath = join(ANNOTATION_DIR, `${Date.now()}-${stem}.${ext}`);
+    writeFileSync(filePath, bytes);
+    screenshotFile = filePath;
+    promptText += `
+
+Screenshot: ${filePath}`;
+  }
+  try {
+    const response = await runtime.context.session.prompt({
+      sessionID: sessionId,
+      text: promptText,
+      files: screenshotFile ? [{ uri: pathToFileURL(screenshotFile).href, name: basename(screenshotFile) }] : undefined
+    });
+    setLastAnnotationStatus(runtime, {
+      ok: true,
+      sessionId,
+      transport: "session.prompt",
+      response
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setLastAnnotationStatus(runtime, { ok: false, sessionId, error: message });
+    throw error;
+  }
+}
+function buildStatus(runtime) {
+  return {
+    app: APP_ID,
+    version: getPackageVersion(),
+    runtime: {
+      platform: process.platform,
+      node: process.version,
+      tmpdir: tmpdir(),
+      xdgRuntimeDir: Boolean(process.env.XDG_RUNTIME_DIR),
+      uid: typeof process.getuid === "function" ? process.getuid() : null
+    },
+    instanceId: runtime.sessionId,
+    sessionId: runtime.sessionId,
+    opencodeSessionId: runtime.activeSessionId,
+    label: runtime.label,
+    directory: runtime.directory,
+    runtimeBaseDir: BASE_DIR,
+    annotationDir: ANNOTATION_DIR,
+    logPath: LOG_PATH,
+    server: {
+      status: runtime.startupStatus,
+      host: LISTEN_HOST,
+      port: runtime.listeningPort,
+      startupError: runtime.startupError,
+      bindFailures: runtime.bindFailures
+    },
+    port: runtime.listeningPort,
+    lastExtensionVersion: runtime.lastExtensionVersion,
+    claimTtlMs: CLAIM_TTL_MS,
+    claims: listClaims(runtime),
+    lastAnnotation: runtime.lastAnnotationStatus
+  };
+}
+async function startServer(runtime) {
+  if (runtime.listeningPort)
+    return;
+  runtime.startupStatus = "starting";
+  runtime.startupError = null;
+  runtime.bindFailures.length = 0;
+  for (let port = PORT_START;port <= PORT_END; port++) {
+    const server = createServer(async (req, res) => {
+      const origin = typeof req.headers.origin === "string" ? req.headers.origin : "*";
+      if (req.method === "OPTIONS") {
+        json(res, 200, { ok: true }, origin);
+        return;
+      }
+      try {
+        const url = new URL(req.url || "/", `http://${LISTEN_HOST}:${port}`);
+        if (req.method === "GET" && url.pathname === "/status") {
+          json(res, 200, buildStatus(runtime), origin);
+          return;
+        }
+        if (req.method === "GET" && url.pathname === "/sessions") {
+          const sessions = await listOpenCodeSessions(runtime);
+          json(res, 200, {
+            sessions
+          }, origin);
+          return;
+        }
+        if (req.method === "POST" && url.pathname === "/claim") {
+          const body = await readJsonBody(req);
+          const tabId = body?.tabId;
+          const sessionId = body?.sessionId;
+          const extensionVersion = body?.extensionVersion;
+          if (!Number.isFinite(tabId))
+            throw new Error("tabId is required");
+          if (typeof sessionId !== "string" || !sessionId)
+            throw new Error("sessionId is required");
+          await ensureSessionTitle(runtime, sessionId);
+          rememberClaim(runtime, Number(tabId), sessionId, extensionVersion);
+          json(res, 200, { ok: true, sessionId }, origin);
+          return;
+        }
+        if (req.method === "POST" && url.pathname === "/annotation") {
+          const body = await readJsonBody(req);
+          const tabId = body?.tabId;
+          const sessionId = body?.sessionId;
+          const extensionVersion = body?.extensionVersion;
+          const annotation = body?.annotation;
+          if (!Number.isFinite(tabId))
+            throw new Error("tabId is required");
+          if (typeof sessionId !== "string" || !sessionId)
+            throw new Error("sessionId is required");
+          if (!annotation || typeof annotation !== "object")
+            throw new Error("annotation is required");
+          rememberClaim(runtime, Number(tabId), sessionId, extensionVersion);
+          await queueAnnotationPrompt(runtime, sessionId, { ...annotation, tabId: Number(tabId) });
+          json(res, 200, { ok: true, sessionId }, origin);
+          return;
+        }
+        if (req.method === "POST" && url.pathname === "/unclaim") {
+          const body = await readJsonBody(req);
+          const tabId = body?.tabId;
+          const extensionVersion = body?.extensionVersion;
+          const cleanVersion = cleanExtensionVersion(extensionVersion);
+          if (cleanVersion)
+            runtime.lastExtensionVersion = cleanVersion;
+          if (!Number.isFinite(tabId))
+            throw new Error("tabId is required");
+          runtime.claims.delete(Number(tabId));
+          json(res, 200, { ok: true }, origin);
+          return;
+        }
+        json(res, 404, { ok: false, error: "Not found" }, origin);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logDebug(`http error path=${req.url || ""} error=${message}`);
+        json(res, 400, { ok: false, error: message }, origin);
+      }
+    });
+    const started = await new Promise((resolve) => {
+      const onError = (error) => {
+        const failure = {
+          port,
+          code: error.code,
+          message: error.message
+        };
+        runtime.bindFailures.push(failure);
+        logDebug(`http bind failed port=${port} code=${failure.code || ""} error=${failure.message}`);
+        resolve(false);
+      };
+      server.once("error", onError);
+      server.listen(port, LISTEN_HOST, () => {
+        server.off("error", onError);
+        resolve(true);
+      });
+    });
+    if (!started)
+      continue;
+    runtime.server = server;
+    runtime.listeningPort = port;
+    runtime.startupStatus = "listening";
+    server.on("error", (error) => {
+      runtime.startupStatus = "failed";
+      runtime.startupError = error.message;
+      logDebug(`http server error port=${port} code=${error.code || ""} error=${error.message}`);
+    });
+    logDebug(`http server listening port=${port} session=${runtime.sessionId} label=${JSON.stringify(runtime.label)}`);
+    return;
+  }
+  runtime.startupStatus = "failed";
+  runtime.startupError = `Could not bind OpenCode annotation server on ${LISTEN_HOST} ports ${PORT_START}-${PORT_END}`;
+  throw new Error(runtime.startupError);
+}
+async function stopServer(runtime) {
+  const server = runtime.server;
+  runtime.server = null;
+  runtime.listeningPort = null;
+  runtime.startupStatus = "not-started";
+  runtime.startupError = null;
+  runtime.activeSessionId = null;
+  runtime.label = buildSessionLabel(runtime.directory);
+  runtime.lastExtensionVersion = null;
+  runtime.lastAnnotationStatus = null;
+  runtime.sessionTitles.clear();
+  runtime.claims.clear();
+  if (!server)
+    return;
+  await new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+var plugin_default = Plugin.define({
+  id: "opencode-chrome-annotation",
+  async setup(context) {
+    const runtime = createPluginRuntime(context);
+    const controller = new AbortController;
+    const toolRegistration = await context.tool.transform((editor) => {
+      editor.add({
+        name: "chrome_status",
+        description: "Report OpenCode Chrome Annotation local server, session, tab claim, and last annotation status.",
+        input: { type: "object", properties: {}, additionalProperties: false },
+        async execute() {
+          return { content: JSON.stringify(buildStatus(runtime), null, 2) };
+        }
+      });
+    });
+    const eventTask = (async () => {
+      try {
+        for await (const event of context.event.subscribe({ signal: controller.signal })) {
+          if (event.location?.directory !== runtime.directory || (event.location && "workspaceID" in event.location ? event.location.workspaceID : undefined) !== context.location.workspaceID)
+            continue;
+          switch (event.type) {
+            case "session.created":
+              if (event.data.title)
+                applySessionTitle(runtime, event.data.sessionID, event.data.title);
+              break;
+            case "session.renamed":
+              applySessionTitle(runtime, event.data.sessionID, event.data.title);
+              break;
+            case "session.viewed":
+              runtime.activeSessionId = event.data.sessionID;
+              await ensureSessionTitle(runtime, event.data.sessionID);
+              runtime.label = runtime.sessionTitles.get(event.data.sessionID) || buildSessionLabel(runtime.directory);
+              break;
+            case "session.deleted":
+            case "session.archived":
+              runtime.sessionTitles.delete(event.data.sessionID);
+              if (runtime.activeSessionId === event.data.sessionID) {
+                runtime.activeSessionId = null;
+                runtime.label = buildSessionLabel(runtime.directory);
+              }
+              break;
+          }
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          const message = error instanceof Error ? error.message : String(error);
+          logDebug(`event subscription failed error=${message}`);
+        }
+      }
+    })();
+    const cleanup = async () => {
+      controller.abort();
+      try {
+        await stopServer(runtime);
+      } finally {
+        await toolRegistration.dispose();
+        await eventTask;
+      }
+    };
+    try {
+      await startServer(runtime);
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
+    return cleanup;
+  }
+});
+export {
+  plugin_default as default
+};

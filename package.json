@@ -10,20 +10,20 @@
   },
   "files": [
     "index.js",
-    "dist",
+    "dist/plugin.js",
     "README.md"
   ],
   "scripts": {
-    "build": "bun build src/plugin.ts --target=node --external @opencode/plugin --external effect --external \"effect/*\" --outfile=dist/plugin.js",
+    "build:plugin": "bun build src/plugin.ts --target=node --external @opencode/plugin --external effect --external \"effect/*\" --outfile=dist/plugin.js",
     "build:extension": "node scripts/build-extension.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "bun run build && node --test",
+    "test": "bun run build:plugin && node --test",
     "check:extension": "npm run build:extension && node --check extension/background.js && node --check extension/injected/dom.js && node -e \"JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'))\"",
-    "dev": "bun run build",
-    "dev:setup": "bun run build",
+    "dev": "bun run build:plugin",
+    "dev:setup": "bun run build:plugin",
     "build:zip": "node scripts/build-extension-zip.mjs",
     "icons:generate": "node scripts/generate-icons.mjs",
-    "prepublishOnly": "bun run build",
+    "prepublishOnly": "bun run build:plugin",
     "publish": "node -e \"if (process.env.npm_command === 'publish') process.exit(0); require('child_process').execSync('npm publish --access public', { stdio: 'inherit' });\""
   },
   "keywords": [

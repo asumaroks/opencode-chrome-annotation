@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 .opencode/
 artifacts/
-dist/
+dist/*
+!dist/plugin.js
 extension/
 release/

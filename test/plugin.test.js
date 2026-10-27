@@ -120,7 +120,7 @@ async function waitForStatus(baseUrl, predicate) {
   assert.fail("plugin status did not reach the expected state")
 }
 
-test("built V2 plugin serves the extension protocol and cleans up on reload", async () => {
+test("native V2 entrypoint serves the extension protocol and cleans up on reload", async () => {
   const entrypoints = Host.resolve({ directory: fileURLToPath(new URL("../", import.meta.url)) })
   assert.ok(entrypoints.server)
   const loaded = await Host.load(entrypoints.server)
@@ -129,7 +129,7 @@ test("built V2 plugin serves the extension protocol and cleans up on reload", as
   assert.equal(typeof plugin.setup, "function")
 
   const first = createMockContext()
-  const firstCleanup = await plugin.setup(first.context)
+  const firstCleanup = await loaded.default.setup(first.context)
   let screenshotPath
   let statusUrl
   let firstInstanceId
@@ -219,7 +219,7 @@ test("built V2 plugin serves the extension protocol and cleans up on reload", as
   await assert.rejects(request(statusUrl, "/status"))
 
   const second = createMockContext()
-  const secondCleanup = await plugin.setup(second.context)
+  const secondCleanup = await loaded.default.setup(second.context)
   try {
     await second.subscribed
     const toolStatus = JSON.parse((await second.tools.get("chrome_status").execute({})).content)
