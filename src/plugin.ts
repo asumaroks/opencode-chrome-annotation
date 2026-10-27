@@ -220,7 +220,7 @@ async function listOpenCodeSessions(
 ): Promise<Array<{ id: string; title: string; directory?: string; status: string }>> {
   const response = await runtime.context.session.list({ directory: runtime.directory });
   const sessions = response.data
-    .filter((item) => !item.time.archived)
+    .filter((item) => !item.time.archived && item.location.directory === runtime.directory)
     .map((item) => {
       const title = item.title?.trim() || `Session ${item.id.slice(0, 8)}`;
       applySessionTitle(runtime, item.id, title);
@@ -233,8 +233,6 @@ async function listOpenCodeSessions(
       };
     });
 
-  if (!sessions.length) return [fallbackSession(runtime)];
-
   if (runtime.activeSessionId) {
     const active = sessions.find((session) => session.id === runtime.activeSessionId);
     if (active) {
@@ -242,18 +240,11 @@ async function listOpenCodeSessions(
       return [rest];
     }
 
-    const activeTitle = runtime.sessionTitles.get(runtime.activeSessionId);
-    if (activeTitle) {
-      return [
-        {
-          id: runtime.activeSessionId,
-          title: activeTitle,
-          directory: runtime.directory,
-          status: "open",
-        },
-      ];
-    }
+    runtime.activeSessionId = null;
+    runtime.label = buildSessionLabel(runtime.directory);
   }
+
+  if (!sessions.length) return [fallbackSession(runtime)];
 
   sessions.sort((a, b) => b.updatedAt - a.updatedAt);
   const { updatedAt: _updatedAt, ...latest } = sessions[0];
@@ -527,6 +518,11 @@ export default Plugin.define({
     const eventTask = (async () => {
       try {
         for await (const event of context.event.subscribe({ signal: controller.signal })) {
+          if (
+            event.location?.directory !== runtime.directory ||
+            (event.location && "workspaceID" in event.location ? event.location.workspaceID : undefined) !==
+              context.location.workspaceID
+          ) continue;
           switch (event.type) {
             case "session.created":
               if (event.data.title) applySessionTitle(runtime, event.data.sessionID, event.data.title);

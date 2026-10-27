@@ -9,6 +9,7 @@
     "./plugin": "./dist/plugin.js"
   },
   "files": [
+    "index.js",
     "dist",
     "README.md"
   ],
@@ -21,7 +22,7 @@
     "dev": "bun run build",
     "dev:setup": "bun run build",
     "build:zip": "node scripts/build-extension-zip.mjs",
-    "icons:generate": "sips -s format png -z 16 16 icon.svg --out extension/icons/icon16.png && sips -s format png -z 48 48 icon.svg --out extension/icons/icon48.png && sips -s format png -z 128 128 icon.svg --out extension/icons/icon128.png",
+    "icons:generate": "node scripts/generate-icons.mjs",
     "prepublishOnly": "bun run build",
     "publish": "node -e \"if (process.env.npm_command === 'publish') process.exit(0); require('child_process').execSync('npm publish --access public', { stdio: 'inherit' });\""
   },
@@ -48,8 +49,9 @@
     "effect": "^4.0.1"
   },
   "devDependencies": {
-    "@types/chrome": "*",
     "@opencode/plugin": "2.1.4",
+    "@resvg/resvg-js": "2.6.2",
+    "@types/chrome": "*",
     "bun-types": "*",
     "effect": "4.0.1",
     "typescript": "*"
