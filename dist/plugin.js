@@ -31,6 +31,7 @@ function createPluginRuntime(context) {
     startupError: null,
     bindFailures: [],
     lastAnnotationStatus: null,
+    lastShare: null,
     activeSessionId: null,
     lastExtensionVersion: null,
     sessionTitles: new Map,
@@ -128,6 +129,30 @@ function buildAnnotationPrompt(annotation) {
 }
 function setLastAnnotationStatus(runtime, status) {
   runtime.lastAnnotationStatus = { ...status, time: new Date().toISOString() };
+}
+function buildSharePrompt(share) {
+  const page = share?.page || {};
+  const viewport = share?.viewport || {};
+  const selectionText = typeof share?.selectionText === "string" ? share.selectionText.trim() : "";
+  return [
+    "Browser tab shared from Chrome",
+    "",
+    "Page:",
+    `Title: ${page.title || ""}`,
+    `URL: ${page.url || ""}`,
+    typeof share?.tabId === "number" ? `Tab ID: ${share.tabId}` : "Tab ID: ",
+    ...selectionText ? ["", "Selected text:", selectionText] : [],
+    ...share?.viewport ? [
+      "",
+      `Viewport: width=${viewport.width ?? ""} height=${viewport.height ?? ""} devicePixelRatio=${viewport.devicePixelRatio ?? ""}`
+    ] : [],
+    "",
+    "Please look at the screenshot, briefly describe the page, and wait for further instructions."
+  ].join(`
+`);
+}
+function setLastShareStatus(runtime, status) {
+  runtime.lastShare = { ...status, time: new Date().toISOString() };
 }
 function applySessionTitle(runtime, sessionId, title) {
   const next = String(title || "").trim();
@@ -235,21 +260,15 @@ function listClaims(runtime) {
   pruneStaleClaims(runtime);
   return Array.from(runtime.claims.entries()).map(([tabId, info]) => ({ tabId, ...info })).sort((a, b) => a.tabId - b.tabId);
 }
-async function queueAnnotationPrompt(runtime, sessionId, annotation) {
-  setLastAnnotationStatus(runtime, {
-    ok: null,
-    sessionId,
-    phase: "received",
-    commentLength: typeof annotation?.comment === "string" ? annotation.comment.length : 0
-  });
-  let promptText = buildAnnotationPrompt(annotation);
-  const screenshot = annotation?.screenshot;
+async function queuePrompt(runtime, sessionId, options) {
+  let promptText = options.text;
+  const screenshot = options.screenshot;
   let screenshotFile;
   if (screenshot?.dataUrl) {
     mkdirSync(ANNOTATION_DIR, { recursive: true });
     const { mime, bytes } = decodeDataUrl(screenshot.dataUrl);
     const ext = mime === "image/jpeg" ? "jpg" : mime === "image/webp" ? "webp" : "png";
-    const stem = sanitizeFileStem(annotation?.page?.title || annotation?.element?.tag || "annotation");
+    const stem = sanitizeFileStem(options.stem || "annotation");
     const filePath = join(ANNOTATION_DIR, `${Date.now()}-${stem}.${ext}`);
     writeFileSync(filePath, bytes);
     screenshotFile = filePath;
@@ -257,11 +276,25 @@ async function queueAnnotationPrompt(runtime, sessionId, annotation) {
 
 Screenshot: ${filePath}`;
   }
+  const response = await runtime.context.session.prompt({
+    sessionID: sessionId,
+    text: promptText,
+    files: screenshotFile ? [{ uri: pathToFileURL(screenshotFile).href, name: basename(screenshotFile) }] : undefined
+  });
+  return response;
+}
+async function queueAnnotationPrompt(runtime, sessionId, annotation) {
+  setLastAnnotationStatus(runtime, {
+    ok: null,
+    sessionId,
+    phase: "received",
+    commentLength: typeof annotation?.comment === "string" ? annotation.comment.length : 0
+  });
   try {
-    const response = await runtime.context.session.prompt({
-      sessionID: sessionId,
-      text: promptText,
-      files: screenshotFile ? [{ uri: pathToFileURL(screenshotFile).href, name: basename(screenshotFile) }] : undefined
+    const response = await queuePrompt(runtime, sessionId, {
+      text: buildAnnotationPrompt(annotation),
+      screenshot: annotation?.screenshot,
+      stem: annotation?.page?.title || annotation?.element?.tag || "annotation"
     });
     setLastAnnotationStatus(runtime, {
       ok: true,
@@ -272,6 +305,26 @@ Screenshot: ${filePath}`;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setLastAnnotationStatus(runtime, { ok: false, sessionId, error: message });
+    throw error;
+  }
+}
+async function queueSharePrompt(runtime, sessionId, share) {
+  setLastShareStatus(runtime, { ok: null, sessionId, phase: "received" });
+  try {
+    const response = await queuePrompt(runtime, sessionId, {
+      text: buildSharePrompt(share),
+      screenshot: share?.screenshot,
+      stem: share?.page?.title || "shared-tab"
+    });
+    setLastShareStatus(runtime, {
+      ok: true,
+      sessionId,
+      transport: "session.prompt",
+      response
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setLastShareStatus(runtime, { ok: false, sessionId, error: message });
     throw error;
   }
 }
@@ -305,7 +358,8 @@ function buildStatus(runtime) {
     lastExtensionVersion: runtime.lastExtensionVersion,
     claimTtlMs: CLAIM_TTL_MS,
     claims: listClaims(runtime),
-    lastAnnotation: runtime.lastAnnotationStatus
+    lastAnnotation: runtime.lastAnnotationStatus,
+    lastShare: runtime.lastShare
   };
 }
 async function startServer(runtime) {
@@ -362,6 +416,28 @@ async function startServer(runtime) {
             throw new Error("annotation is required");
           rememberClaim(runtime, Number(tabId), sessionId, extensionVersion);
           await queueAnnotationPrompt(runtime, sessionId, { ...annotation, tabId: Number(tabId) });
+          json(res, 200, { ok: true, sessionId }, origin);
+          return;
+        }
+        if (req.method === "POST" && url.pathname === "/share") {
+          const requestOrigin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+          if (/^https?:\/\//i.test(requestOrigin)) {
+            json(res, 403, { ok: false, error: "cross-origin requests are not allowed" }, origin);
+            return;
+          }
+          const body = await readJsonBody(req);
+          const tabId = body?.tabId;
+          const sessionId = body?.sessionId;
+          const extensionVersion = body?.extensionVersion;
+          const share = body?.share;
+          if (!Number.isFinite(tabId))
+            throw new Error("tabId is required");
+          if (typeof sessionId !== "string" || !sessionId)
+            throw new Error("sessionId is required");
+          if (!share || typeof share !== "object")
+            throw new Error("share is required");
+          rememberClaim(runtime, Number(tabId), sessionId, extensionVersion);
+          await queueSharePrompt(runtime, sessionId, { ...share, tabId: Number(tabId) });
           json(res, 200, { ok: true, sessionId }, origin);
           return;
         }
@@ -429,6 +505,7 @@ async function stopServer(runtime) {
   runtime.label = buildSessionLabel(runtime.directory);
   runtime.lastExtensionVersion = null;
   runtime.lastAnnotationStatus = null;
+  runtime.lastShare = null;
   runtime.sessionTitles.clear();
   runtime.claims.clear();
   if (!server)
@@ -445,7 +522,7 @@ var plugin_default = Plugin.define({
     const toolRegistration = await context.tool.transform((editor) => {
       editor.add({
         name: "chrome_status",
-        description: "Report OpenCode Chrome Annotation local server, session, tab claim, and last annotation status.",
+        description: "Report OpenCode Chrome Annotation local server, session, tab claim, last annotation, and last tab share status.",
         input: { type: "object", properties: {}, additionalProperties: false },
         async execute() {
           return { content: JSON.stringify(buildStatus(runtime), null, 2) };

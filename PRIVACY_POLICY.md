@@ -16,16 +16,25 @@ When you use the extension, it can capture and send annotation context that you 
 - A PNG screenshot of the visible tab, which can include content outside the selected element
 - Routing information: tab ID, selected OpenCode session ID, and extension version
 
-Page content, URLs, element text, and screenshots can contain personal or confidential information. Check what is visible before submitting an annotation.
+When you share a tab from the page context menu instead of submitting an annotation, the extension sends:
+- Current page URL and title
+- A PNG screenshot of the visible tab area
+- Viewport dimensions and device pixel ratio
+- Selected text, only if text was selected when the menu item was used
+- Routing information: tab ID, selected OpenCode session ID, and extension version
+
+Element metadata is not sent in the share flow, which has no element selection and no comment.
+
+Page content, URLs, element text, and screenshots can contain personal or confidential information. Check what is visible before submitting an annotation or sharing a tab.
 
 ## How data is used
 
-Annotation context is used to deliver your request to your selected OpenCode session. Connection state and diagnostic information support routing and troubleshooting.
+Annotation context and shared-tab context are used to deliver your request to your selected OpenCode session. Connection state and diagnostic information support routing and troubleshooting.
 
-1. The extension sends the annotation payload over HTTP to the selected local plugin instance at `127.0.0.1` on a port in the range `39240-39260`, using its `/annotation` API.
-2. The plugin decodes the screenshot into a local file and builds a prompt containing your comment, page and element metadata, viewport information, and tab ID.
-3. The plugin calls OpenCode's `context.session.prompt` with that text and a screenshot file attachment.
-4. OpenCode processes the prompt and attachment through the model provider configured by the user. Depending on that configuration, annotation text and screenshot content may be sent to a remote provider.
+1. The extension sends the annotation payload over HTTP to the selected local plugin instance at `127.0.0.1` on a port in the range `39240-39260`, using its `/annotation` API. A shared tab uses the same local connection and routing fields over the `/share` API.
+2. The plugin decodes the screenshot into a local file and builds a prompt containing your comment, page and element metadata, viewport information, and tab ID. For a shared tab it stores the screenshot and builds the prompt from the page URL and title, tab ID, viewport when available, and selected text when it was captured; element metadata is absent in that flow.
+3. The plugin calls OpenCode's `context.session.prompt` with that text and a screenshot file attachment. This step is the same for annotations and shared tabs.
+4. OpenCode processes the prompt and attachment through the model provider configured by the user. Depending on that configuration, annotation text, shared-tab text, and screenshot content may be sent to a remote provider.
 
 The extension-to-plugin connection is local; the complete workflow is not necessarily local-only. OpenCode and provider transport, storage, retention, and other handling are outside this extension's implementation and depend on the user's configuration and the applicable provider policies.
 

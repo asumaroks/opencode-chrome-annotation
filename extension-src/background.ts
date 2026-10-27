@@ -1,15 +1,21 @@
 import { logExtension, warnExtension } from "./logger.js"
 import { getActiveTab } from "./tabs.js"
 import { postJson, requestSessionState } from "./server-api.js"
-import { injectConnectionOverlay, removeConnectionOverlay, showAnnotationError } from "./ui-overlays.js"
+import {
+  injectConnectionOverlay,
+  removeConnectionOverlay,
+  showAnnotationError,
+  showShareToast,
+} from "./ui-overlays.js"
 import { showSessionPicker } from "./session-picker.js"
 import { runAnnotationPicker } from "./annotation-picker.js"
 import { createConnectionMonitor } from "./connection-monitor.js"
 import { createClaimsStore } from "./claims-store.js"
-import type { AnnotationPayload, ExtensionMessage, SessionInfo } from "./types.js"
+import type { AnnotationPayload, AnnotationViewport, ExtensionMessage, SessionInfo, SharePayload, TabClaim } from "./types.js"
 
 const claimedTabs = createClaimsStore()
 const extensionVersion = chrome.runtime.getManifest().version
+const SHARE_MENU_ID = "share-tab-with-opencode"
 
 const monitor = createConnectionMonitor({
   claimedTabs,
@@ -70,6 +76,9 @@ async function runMessageAction(message: ExtensionMessage, tab: chrome.tabs.Tab)
       sessionLabel: sessionLabel(message.session),
     })
     await claimTabForSession(tab, message.session)
+    if (message.thenShare) {
+      await shareTab(tab, { claim: claimedTabs.get(tab.id), selectionText: message.selectionText })
+    }
     return { ok: true }
   }
 
@@ -81,7 +90,7 @@ async function runMessageAction(message: ExtensionMessage, tab: chrome.tabs.Tab)
   if (message.type === "refresh_sessions") {
     const { sessions, context } = await requestSessionState()
     if (!tab.id) throw new Error("No active tab found")
-    await showSessionPicker(tab.id, sessions, context)
+    await showSessionPicker(tab.id, sessions, context, message.intent ?? "connect", message.selectionText ?? "")
     return { ok: true, sessions: sessions.length }
   }
 
@@ -103,7 +112,12 @@ async function handleMessage(message: ExtensionMessage, sender: chrome.runtime.M
         error: text,
       })
     }
-    if (tab?.id) await showAnnotationError(tab.id, text).catch(() => {})
+    if (tab?.id) {
+      const shareFailure =
+        (message.type === "connect_tab_to_session" && message.thenShare === true) ||
+        (message.type === "refresh_sessions" && message.intent === "share")
+      await showAnnotationError(tab.id, text, shareFailure ? "OpenCode tab share failed" : undefined).catch(() => {})
+    }
     return { ok: false, error: text }
   }
 }
@@ -135,6 +149,97 @@ async function claimTabForSession(tab: chrome.tabs.Tab, session: SessionInfo): P
     sessionId: session?.id,
     sessionLabel: sessionLabel(session),
     baseUrl: session?.baseUrl,
+  })
+}
+
+async function resolveShareTarget(tab: chrome.tabs.Tab, selectionText = ""): Promise<TabClaim | null> {
+  if (!tab.id) throw new Error("No active tab found")
+
+  const existing = claimedTabs.get(tab.id)
+  if (existing) return existing
+
+  const { sessions, context } = await requestSessionState()
+  if (sessions.length === 1) {
+    await claimTabForSession(tab, sessions[0])
+    return claimedTabs.get(tab.id) ?? null
+  }
+
+  await showSessionPicker(tab.id, sessions, context, "share", selectionText)
+  return null
+}
+
+async function shareTab(
+  tab: chrome.tabs.Tab,
+  options: { claim?: TabClaim; selectionText?: string } = {}
+): Promise<void> {
+  if (!tab.id || !tab.windowId) throw new Error("No active tab found")
+
+  const selectionText = (options.selectionText ?? "").trim()
+  const claim = options.claim || (await resolveShareTarget(tab, selectionText))
+  if (!claim) return
+
+  const current = await chrome.tabs.get(tab.id)
+  if (!current?.active || current.windowId !== tab.windowId) {
+    throw new Error("The shared tab is no longer the active tab. Switch back to it and share again.")
+  }
+  if (toOriginPattern(current.url) !== toOriginPattern(tab.url)) {
+    throw new Error("The shared tab is no longer the active tab. Switch back to it and share again.")
+  }
+
+  logExtension("Capturing shared tab screenshot", { tabId: tab.id, windowId: current.windowId })
+  const screenshot = await chrome.tabs.captureVisibleTab(current.windowId, { format: "png" })
+  logExtension("Captured shared tab screenshot", {
+    tabId: tab.id,
+    bytesApprox: Math.round((screenshot.length * 3) / 4),
+  })
+
+  let viewport: AnnotationViewport | undefined
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "ISOLATED",
+      func: () => ({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      }),
+    })
+    viewport = (injection?.result as AnnotationViewport | undefined) || undefined
+  } catch (error) {
+    warnExtension("Failed to read viewport for tab share", {
+      tabId: tab.id,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  const share: SharePayload = {
+    page: {
+      url: current.url || "",
+      title: current.title || "",
+    },
+    ...(selectionText ? { selectionText } : {}),
+    ...(viewport ? { viewport } : {}),
+    screenshot: {
+      mime: "image/png",
+      dataUrl: screenshot,
+    },
+  }
+
+  try {
+    await postJson(claim.baseUrl, "/share", { ...claimRequestBody(tab.id, claim.sessionId), share })
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error)
+    if (text === "status 404") {
+      throw new Error("Update the OpenCode plugin: this version does not support tab sharing")
+    }
+    throw error
+  }
+
+  await showShareToast(tab.id, claim.sessionLabel || "").catch((error) => {
+    warnExtension("Failed to show share toast", {
+      tabId: tab.id,
+      error: error instanceof Error ? error.message : String(error),
+    })
   })
 }
 
@@ -249,6 +354,42 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   const claim = claimedTabs.get(tabId)
   if (claim) injectConnectionOverlay(tabId)
+})
+
+function registerContextMenus(): void {
+  chrome.contextMenus.removeAll(() => {
+    void chrome.runtime.lastError
+    chrome.contextMenus.create(
+      {
+        id: SHARE_MENU_ID,
+        title: "Share this tab with OpenCode",
+        contexts: ["page", "selection"],
+        documentUrlPatterns: ["http://*/*", "https://*/*"],
+      },
+      () => {
+        void chrome.runtime.lastError
+      }
+    )
+  })
+}
+
+chrome.runtime.onInstalled.addListener(() => registerContextMenus())
+chrome.runtime.onStartup.addListener(() => registerContextMenus())
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== SHARE_MENU_ID) return
+
+  try {
+    const target = tab?.id ? tab : await getActiveTab()
+    await shareTab(target, { selectionText: info.selectionText })
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error)
+    warnExtension("Failed to share tab", { error: text })
+    const target = tab?.id ? tab : await getActiveTab().catch((): null => null)
+    if (target?.id) {
+      await showAnnotationError(target.id, text, "OpenCode tab share failed").catch(() => {})
+    }
+  }
 })
 
 async function restoreClaimState() {

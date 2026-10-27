@@ -10,6 +10,7 @@
   "changes": [
     "Portable extension ZIP packaging with an explicit asset allowlist, GPL license and modification notice",
     "Regression coverage for builds without npm or zip executables, asset integrity and stale output exclusion",
-    "Repository, issue tracker and homepage metadata target asumaroks; original authorship retained"
+    "Repository, issue tracker and homepage metadata target asumaroks; original authorship retained",
+    "Tab sharing from the Chrome page context menu via a new /share plugin endpoint, plus README and privacy policy updates"
   ]
 }

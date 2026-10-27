@@ -73,9 +73,22 @@ export type AnnotationPayload = {
 
 export type ExtensionMessage =
   | { type: "start_annotation_from_overlay" }
-  | { type: "connect_tab_to_session"; session: SessionInfo }
+  | { type: "connect_tab_to_session"; session: SessionInfo; thenShare?: boolean; selectionText?: string }
   | { type: "disconnect_tab" }
-  | { type: "refresh_sessions" }
+  | { type: "refresh_sessions"; intent?: "connect" | "share"; selectionText?: string }
+
+export type SharePayload = {
+  page: {
+    url: string
+    title: string
+  }
+  selectionText?: string
+  viewport?: AnnotationViewport
+  screenshot: {
+    mime: "image/png"
+    dataUrl: string
+  }
+}
 
 export type InstanceStatus = {
   app?: string
