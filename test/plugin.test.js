@@ -460,3 +460,46 @@ test("tab share rejects cross-origin requests but keeps the normal path open", a
     }
   })
 })
+
+test("annotation rejects cross-origin requests but keeps the normal path open", async () => {
+  await withRuntime(async (mock, baseUrl) => {
+    let screenshotPath
+    try {
+      const blocked = await request(
+        baseUrl,
+        "/annotation",
+        "POST",
+        {
+          tabId: 24,
+          sessionId: "target-session",
+          annotation: {
+            comment: "Blocked annotation",
+            page: { title: "Blocked page", url: "https://blocked.test" },
+            screenshot: { dataUrl: "data:image/png;base64,SGVsbG8=" },
+          },
+        },
+        { origin: "https://evil.test" }
+      )
+      assert.equal(blocked.status, 403)
+      assert.deepEqual(blocked.body, { ok: false, error: "cross-origin requests are not allowed" })
+      assert.equal(mock.prompts.length, 0)
+      assert.deepEqual((await request(baseUrl, "/status")).body.claims, [])
+
+      const allowed = await request(baseUrl, "/annotation", "POST", {
+        tabId: 24,
+        sessionId: "target-session",
+        annotation: {
+          comment: "Allowed annotation",
+          page: { title: "Allowed page", url: "https://allowed.test" },
+          screenshot: { dataUrl: "data:image/png;base64,SGVsbG8=" },
+        },
+      })
+      assert.equal(allowed.status, 200)
+      assert.equal(mock.prompts.length, 1)
+      assert.equal(mock.prompts[0].sessionID, "target-session")
+      screenshotPath = fileURLToPath(mock.prompts[0].files[0].uri)
+    } finally {
+      if (screenshotPath) await unlink(screenshotPath)
+    }
+  })
+})

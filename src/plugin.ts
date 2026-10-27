@@ -224,6 +224,10 @@ function cleanExtensionVersion(value: any): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function isWebOrigin(value: unknown): boolean {
+  return typeof value === "string" && /^https?:\/\//i.test(value);
+}
+
 function pruneStaleClaims(runtime: PluginRuntime): void {
   const cutoff = Date.now() - CLAIM_TTL_MS;
   for (const [tabId, claim] of runtime.claims.entries()) {
@@ -475,6 +479,11 @@ async function startServer(runtime: PluginRuntime): Promise<void> {
         }
 
         if (req.method === "POST" && url.pathname === "/annotation") {
+          if (isWebOrigin(req.headers.origin)) {
+            json(res, 403, { ok: false, error: "cross-origin requests are not allowed" }, origin);
+            return;
+          }
+
           const body = await readJsonBody(req);
           const tabId = body?.tabId;
           const sessionId = body?.sessionId;
@@ -492,8 +501,7 @@ async function startServer(runtime: PluginRuntime): Promise<void> {
         }
 
         if (req.method === "POST" && url.pathname === "/share") {
-          const requestOrigin = typeof req.headers.origin === "string" ? req.headers.origin : "";
-          if (/^https?:\/\//i.test(requestOrigin)) {
+          if (isWebOrigin(req.headers.origin)) {
             json(res, 403, { ok: false, error: "cross-origin requests are not allowed" }, origin);
             return;
           }

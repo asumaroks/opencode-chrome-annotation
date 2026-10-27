@@ -65,6 +65,8 @@ The **Share this tab with OpenCode** item is registered through the extension's 
 
 The extension sends this payload to the selected plugin's local HTTP API at `127.0.0.1:39240-39260`. The plugin saves the screenshot in its local runtime `annotations/` directory and calls `context.session.prompt` with the annotation text and screenshot file attachment. OpenCode then processes that context through your configured model provider, which may be remote. This is not a guarantee of local-only processing.
 
+Both `/annotation` and `/share` reject requests that carry an `http(s)` Origin header with `403`, so a web page cannot drive-by queue a prompt. Requests without an Origin header, and requests from `chrome-extension://` origins, are accepted.
+
 The plugin does not automatically delete screenshot files. Connection claims use `chrome.storage.session`, with `chrome.storage.local` as a fallback; diagnostic logs may also contain page and connection metadata. Review the [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) and your OpenCode/provider settings before submitting sensitive content.
 
 
