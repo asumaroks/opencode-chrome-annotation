@@ -1,0 +1,15 @@
+globalThis.__octm = globalThis.__octm || {
+  __octmInert: true,
+  init() {},
+  rows: () => [],
+  count: () => 0,
+  select() {},
+  isSendBlocked: () => false,
+  closeMenu() {},
+  cancel() {},
+  invalidate() {},
+  pair() {},
+  state: () => ({}),
+  subscribe: () => () => {},
+  getSnapshot: () => 0,
+}

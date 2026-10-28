@@ -32,6 +32,22 @@ For now, build and load this distribution as an unpacked extension:
 
 The build also generates `extension/`, which can be loaded directly during development. Building a ZIP does not publish the extension to the Chrome Web Store.
 
+### OpenChamber adapter
+
+The `@` menu integration is a local patch of the installed OpenChamber build. It is versioned and pinned, and nothing runs automatically:
+
+```bash
+npm run install:openchamber-adapter            # dry run: prints the plan, writes nothing
+npm run install:openchamber-adapter -- -Apply  # install
+npm run rollback:openchamber-adapter           # restore the backup
+```
+
+The supported build is OpenChamber 2.5.2 with the asset `assets/useAppFontEffects-DFJQ0O1i.js` and the pristine SHA-256 `4f288a1a01526447321b06f40adf7c2625252f570ecdd3afa1fee739ba860da6`. The installer reads that pin from `integrations/openchamber/patch-manifest.mjs`, locates the entry module and the app asset, and refuses with `result: refused` before writing anything when the hash or a patch marker differs. An OpenChamber update therefore disables the adapter until it is re-audited and re-pinned; the app itself keeps working unpatched.
+
+`-Apply` writes a timestamped backup under `web-dist/.octm-backups/`, patches a staged copy, runs `node --check` on it and the adapter modules, then records every written hash in `web-dist/.octm-install.json`. Running it again reports `result: already-installed` and changes nothing. Rollback restores the recorded originals, removes only the files the install added, and refuses if a recorded file changed since.
+
+Restart OpenChamber after installing or rolling back, or reload the UI with cache bypass: a service-worker cache can keep serving the previous asset.
+
 ## How It Works
 
 1. Start OpenCode in your project.
@@ -41,6 +57,21 @@ The build also generates `extension/`, which can be loaded directly during devel
 5. Select an element, write your instruction, and submit.
 6. To share a tab without annotating, right-click anywhere on the page and choose **Share this tab with OpenCode**. The current tab is sent to your OpenCode session: page URL and title, a screenshot of the visible area, and any text you had selected when you opened the menu. No element selection and no written instruction are included. If the tab is not connected yet, it is connected first; when several sessions are available, the session picker opens in share mode.
 
+
+### Chrome tabs in the composer
+
+When the extension is paired, typing `@` in the OpenChamber composer adds a **Chrome tabs** group after the native agent, file and session rows. Each row shows the tab title and URL, and the list narrows by title or URL as you keep typing. Building that list reads tab metadata only.
+
+Page text is captured only after you select a row. The composer shows a pending row with a **Cancel capture** action, Send stays blocked until the capture finishes, and the `@` query is replaced by a draft attachment. Nothing reaches OpenCode until you press Send yourself.
+
+Pairing is a one-time step per connection:
+
+1. Open the extension options page and keep it open; closing or reloading it disconnects context sharing.
+2. Choose the OpenCode instance and click **Get pairing code**.
+3. Copy the 8-digit code into the composer dialog within 60 seconds. The code is single use and the connection lasts five minutes.
+4. Under **Allow one site**, pick the origin of a tab you want to use and click **Allow selected site**. Chrome asks for that origin only, and granting it captures nothing by itself.
+
+Only `http` and `https` tabs that are not incognito, not loading and exposing an active main document are listed. Host access is optional and granted one origin at a time: the manifest declares `<all_urls>` only as an optional host permission, so a site without permission reports a missing-access error until you allow it.
 
 ### What Gets Sent
 
@@ -61,6 +92,15 @@ Tab sharing sends:
 
 Element metadata is not sent when you share a tab, because that flow has no element selection and no written instruction.
 
+Tab context chosen from the composer sends:
+
+- The page title and URL.
+- The capture time.
+- Up to 24 000 characters of the main document's text, with a truncation flag when the page was longer.
+- No form values, cookies, site storage or screenshots.
+
+That text is stored as a draft attachment in the composer and reaches OpenCode only when you send the message.
+
 The **Share this tab with OpenCode** item is registered through the extension's `contextMenus` permission and is used only for that page menu item.
 
 The extension sends this payload to the selected plugin's local HTTP API at `127.0.0.1:39240-39260`. The plugin saves the screenshot in its local runtime `annotations/` directory and calls `context.session.prompt` with the annotation text and screenshot file attachment. OpenCode then processes that context through your configured model provider, which may be remote. This is not a guarantee of local-only processing.
@@ -77,6 +117,10 @@ The plugin runs a local HTTP server bound to `127.0.0.1` on ports `39240-39260`.
 - If the extension can't find any session, ask your agent to run `chrome_status` that should give a detailed report.
 - Make sure OpenCode and your Chromium browser exist in the same localhost network (not in seperate containers).
 - If the menu item reports `Update the OpenCode plugin: this version does not support tab sharing`, the installed local plugin is older than the extension. Update the `opencode-chrome-annotation` npm package to a version that supports the `/share` endpoint, then restart OpenCode.
+- If `npm run install:openchamber-adapter -- -Apply` refuses with `result: refused` and a hash or marker message, the installed OpenChamber build is not the pinned 2.5.2 asset. The adapter is re-audited before a new pin is published; the unpatched app keeps working meanwhile.
+- If the `@` menu shows no Chrome rows, the extension options page is closed or the connection expired. Reopen it, get a new code and pair again. Without a paired connection the menu shows a single **Connect Chrome…** row instead.
+- If a capture reports that Chrome has not granted access to the site, open the options page, choose that site's origin and click **Allow selected site**.
+- If a capture times out or reports that the page changed, the tab reloaded or navigated while its text was read. Select the tab again; nothing was attached and your message text is unchanged.
 
 
 ## Development

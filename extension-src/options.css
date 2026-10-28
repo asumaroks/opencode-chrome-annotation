@@ -1,0 +1,20 @@
+:root { color-scheme: dark; --ink: #f5f1e5; --muted: #b8b9ad; --accent: #d4f67e; --edge: #41473b; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; color: var(--ink); background: #141a15; }
+* { box-sizing: border-box; }
+body { margin: 0; background: radial-gradient(ellipse at top right, #34452c 0, transparent 60%); }
+main { max-width: 760px; margin: auto; padding: 56px 28px; }
+.eyebrow { color: var(--accent); letter-spacing: .16em; font-size: .75rem; }
+h1 { font-family: Georgia, serif; font-weight: 400; font-size: clamp(2.5rem, 8vw, 4rem); line-height: 1.05; margin: 24px 0; }
+h2 { font-size: 1.1rem; font-weight: 600; margin: 0 0 24px; }
+p { color: var(--muted); line-height: 1.65; max-width: 65ch; }
+section { border-top: 1px solid var(--edge); padding: 28px 0 12px; margin-top: 32px; }
+label { display: block; margin-bottom: 8px; }
+select, button { font: inherit; min-height: 44px; border: 1px solid var(--edge); border-radius: 6px; padding: 10px 14px; }
+select { width: 100%; background: #20281f; color: var(--ink); margin-bottom: 14px; }
+button { background: var(--accent); color: #172110; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, select:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+#disconnect, #refresh { background: transparent; color: var(--ink); }
+#code { display: block; font: 2rem "Cascadia Mono", monospace; letter-spacing: .2em; color: var(--accent); overflow-wrap: anywhere; }
+#status { border-left: 3px solid var(--accent); padding-left: 16px; }
+@media (max-width: 480px) { main { padding: 28px 18px; } .actions button { width: 100%; } }

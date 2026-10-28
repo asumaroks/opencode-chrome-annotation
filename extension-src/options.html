@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chrome context · OpenCode</title>
+  <link rel="stylesheet" href="options.css">
+  <script type="module" src="options.js"></script>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">OPENCODE / CHROME CONTEXT</p>
+    <h1>Your tabs.<br>Your permission.</h1>
+    <p>Share page text only when you select a tab in the composer. No screenshots, private tabs, or form values.</p>
+    <section aria-labelledby="pair-title">
+      <h2 id="pair-title">01 · Pair this browser</h2>
+      <label for="instance">OpenCode instance</label>
+      <select id="instance"></select>
+      <div class="actions">
+        <button id="refresh" type="button">Refresh instances &amp; sites</button>
+        <button id="connect" type="button" disabled>Get pairing code</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+      </div>
+      <p>Enter this one-use code in the composer’s Chrome connection control within 60 seconds.</p>
+      <output id="code" aria-label="Pairing code"></output>
+      <p>Keep this page open. Closing or reloading it disconnects context sharing. Connections expire after five minutes; reconnect explicitly with a new code.</p>
+    </section>
+    <section aria-labelledby="site-title">
+      <h2 id="site-title">02 · Allow one site</h2>
+      <label for="site">Site from your open tabs</label>
+      <select id="site"></select>
+      <button id="grant" type="button" disabled>Allow selected site</button>
+      <p>Chrome asks for access to this site only. Permission does not capture anything. Remove access at any time in Chrome’s extension settings.</p>
+    </section>
+    <p id="status" role="status" aria-live="polite" aria-atomic="true">Finding local instances…</p>
+  </main>
+</body>
+</html>

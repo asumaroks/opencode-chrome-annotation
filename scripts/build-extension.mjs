@@ -18,6 +18,8 @@ mkdirSync(join(outputDir, "injected"), { recursive: true })
 mkdirSync(join(outputDir, "icons"), { recursive: true })
 
 copyFileSync(join(sourceDir, "manifest.json"), join(outputDir, "manifest.json"))
+copyFileSync(join(sourceDir, "options.html"), join(outputDir, "options.html"))
+copyFileSync(join(sourceDir, "options.css"), join(outputDir, "options.css"))
 
 generateIcons(root)
 
@@ -27,6 +29,7 @@ const build = spawnSync(
     "build",
     join(sourceDir, "background.ts"),
     join(sourceDir, "injected", "dom.ts"),
+    join(sourceDir, "options.ts"),
     "--target=browser",
     "--format=esm",
     "--outdir",
