@@ -21,9 +21,11 @@ This package uses the OpenCode V2 plugin API and targets OpenCode V2.1.4. V1 `pl
 
 ### Chrome extension installation
 
-A separate Chrome Web Store listing for this distribution has been created and submitted for review. It is still awaiting Chrome Web Store approval, so it is not publicly available and has no store URL to link here yet. The existing listing with ID `abeihanpaeioklkhioiigklonbomhjfd` belongs to upstream, not this repository.
+This distribution is published in the Chrome Web Store as [OpenCode Chrome Annotation](https://chromewebstore.google.com/detail/hgccbnndicphelekihogaacgplgdcclo), item ID `hgccbnndicphelekihogaacgplgdcclo`. The published version is 1.0.1. This repository is at 1.0.4, which has not completed store review, so the newer features — sharing a tab from the context menu, screenshots without extension overlays, and the Chrome tabs group in the composer — are currently available only from a build of this repository.
 
-For now, build and load this distribution as an unpacked extension:
+The existing listing with ID `abeihanpaeioklkhioiigklonbomhjfd` belongs to upstream, not this repository.
+
+To run the current source or test changes before a store release, build and load this distribution as an unpacked extension:
 
 1. Check out this repository and install dependencies with `bun install`.
 2. Run `bun run build:zip` to create `release/opencode-chrome-annotation-extension.zip`.
@@ -169,4 +171,4 @@ bun run build:zip
 
 Report problems or ask repository privacy questions through [GitHub Issues](https://github.com/asumaroks/opencode-chrome-annotation/issues). Issues are public; do not include secrets, private page content, or unredacted screenshots.
 
-The [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) is this distribution's published privacy policy, not a legal compliance guarantee. A new store listing has been created and submitted for Chrome Web Store review and is not public until that review is approved; releasing it afterwards is a manual step. The publisher contact email and store privacy disclosures live in the Chrome Web Store publisher account, not in this repository. The public issue tracker is a repository contact, not a substitute for the store's publisher email field.
+The [privacy policy](https://github.com/asumaroks/opencode-chrome-annotation/blob/main/PRIVACY_POLICY.md) is this distribution's published privacy policy, not a legal compliance guarantee. The Chrome Web Store listing was published on 2026-10-28 as item `hgccbnndicphelekihogaacgplgdcclo`; each later store release remains a manual step. The publisher contact email and store privacy disclosures live in the Chrome Web Store publisher account, not in this repository. The public issue tracker is a repository contact, not a substitute for the store's publisher email field.

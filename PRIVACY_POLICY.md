@@ -1,10 +1,10 @@
 # Privacy Policy for OpenCode Chrome Annotation
 
-Submitted for Chrome Web Store review — updated: 2026-10-27
+Published in the Chrome Web Store (item hgccbnndicphelekihogaacgplgdcclo) — updated: 2026-10-28
 
 This policy describes the independent, modified distribution of OpenCode Chrome Annotation maintained in [asumaroks/opencode-chrome-annotation](https://github.com/asumaroks/opencode-chrome-annotation). It is based on the upstream project by Benjamin Shafii; original authorship and copyright notices are retained under [GPL-3.0-only](LICENSE). It does not describe the upstream Chrome Web Store listing.
 
-The disclosures below describe the reviewed implementation, not a legal compliance guarantee or confirmation of Chrome Web Store approval. A separate store listing for this distribution has been created and submitted for Chrome Web Store review; it is not public until that review is approved.
+The disclosures below describe the reviewed implementation, not a legal compliance guarantee. This distribution's Chrome Web Store listing was published on 2026-10-28 as item `hgccbnndicphelekihogaacgplgdcclo`; a build of this repository can be newer than the published version.
 
 ## What this extension does
 
