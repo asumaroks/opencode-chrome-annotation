@@ -26,6 +26,7 @@
     "icons:generate": "node scripts/generate-icons.mjs",
     "install:openchamber-adapter": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-openchamber-adapter.ps1",
     "rollback:openchamber-adapter": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-openchamber-adapter.ps1 -Rollback",
+    "verify:tab-context-live": "node scripts/verify-tab-context-live.mjs",
     "prepublishOnly": "bun run build:plugin",
     "publish": "node -e \"if (process.env.npm_command === 'publish') process.exit(0); require('child_process').execSync('npm publish --access public', { stdio: 'inherit' });\""
   },
