@@ -2,7 +2,7 @@ import { describe, test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -15,11 +15,6 @@ const adapterDir = join(repoRoot, "integrations", "openchamber")
 
 const BOOTSTRAP_FILES = ["octm-config.js", "octm-fallback.js", "octm-bootstrap.js"]
 const MODULE_FILES = ["runtime.mjs", "index.mjs", "draft-controller.mjs", "mention-source.mjs", "bridge-client.mjs", "patch-manifest.mjs"]
-const INDEX_TAGS = [
-  '<script src="/octm-config.js"></script>',
-  '<script src="/octm-fallback.js"></script>',
-  '<script type="module" crossorigin src="/octm-bootstrap.js"></script>',
-]
 const INSTALLED_BOOTSTRAP = {
   "octm-config.js": {
     sha256: "b67f4fa0b8bd28f30fb7a1bf6745e0f10ce59fc328029c881ca9d43d26c0f45e",
@@ -30,8 +25,8 @@ const INSTALLED_BOOTSTRAP = {
     size: 299,
   },
   "octm-bootstrap.js": {
-    sha256: "2fc4f24a9203041cffdcb8977883c59d2441db4f91d75e61b27c79c70073d970",
-    size: 84,
+    sha256: "fe5e7911998774b43172774f9a8c6902dc033d29bdd9bb0e8a47d50a3b6877a6",
+    size: 101,
   },
 }
 
@@ -53,6 +48,19 @@ const INDEX_HTML = [
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex")
+}
+
+function adapterRev(directory) {
+  const combined = [...MODULE_FILES].sort().map(name => sha256(readFileSync(join(directory, name)))).join("")
+  return sha256(Buffer.from(combined, "utf8")).slice(0, 8)
+}
+
+function indexTags(rev) {
+  return [
+    `<script src="/octm-config.js?rev=${rev}"></script>`,
+    `<script src="/octm-fallback.js?rev=${rev}"></script>`,
+    `<script type="module" crossorigin src="/octm-bootstrap.js?rev=${rev}"></script>`,
+  ]
 }
 
 function powershellExe() {
@@ -138,8 +146,8 @@ function makeFixture() {
   }
 }
 
-function runInstaller(argv, envOverrides = {}) {
-  const result = spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath, ...argv], {
+function runInstaller(argv, envOverrides = {}, installer = installerPath) {
+  const result = spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installer, ...argv], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
@@ -183,7 +191,7 @@ function foreignFile(fixture, name) {
   return { path, sha256: sha256(readFileSync(path)) }
 }
 
-test("bootstrap files are byte-identical to the audited installed build", () => {
+test("bootstrap files are byte-identical to the audited adapter sources", () => {
   for (const name of BOOTSTRAP_FILES) {
     const bytes = readFileSync(join(bootstrapDir, name))
     const expected = INSTALLED_BOOTSTRAP[name]
@@ -191,7 +199,7 @@ test("bootstrap files are byte-identical to the audited installed build", () => 
     assert.equal(bytes.length, expected.size, `${name} size`)
   }
   const bootstrap = readFileSync(join(bootstrapDir, "octm-bootstrap.js"), "utf8")
-  assert.equal(bootstrap.indexOf('from "./octm/runtime.mjs"') >= 0, true)
+  assert.equal(bootstrap.indexOf('from "./octm/runtime.mjs?rev=__OCTM_REV__"') >= 0, true)
   assert.equal(bootstrap.indexOf("installBootstrap(globalThis)") >= 0, true)
 })
 
@@ -290,16 +298,23 @@ if (!powershell) {
     test("apply installs bootstrap files, modules, patched asset, index tags, backup and record", t => {
       const fixture = makeFixture()
       t.after(() => rmSync(fixture.root, { recursive: true, force: true }))
+      const rev = adapterRev(adapterDir)
       const expectedPatched = applyPatches(fixture.assetText)
       const result = runInstaller(applyArgs(fixture))
       assert.equal(result.code, 0, result.output)
       assert.match(result.output, /result: ok/)
       assert.match(result.output, /OVERRIDE: -ExpectedSha256/)
+      assert.equal(result.output.includes(`adapter revision: ${rev}`), true)
 
-      for (const name of BOOTSTRAP_FILES) {
+      const verbatim = BOOTSTRAP_FILES.filter(name => name !== "octm-bootstrap.js")
+      for (const name of verbatim) {
         const installed = readFileSync(join(fixture.webDist, name))
         assert.equal(sha256(installed), sha256(readFileSync(join(bootstrapDir, name))), `${name} copied verbatim`)
       }
+      const installedBootstrap = readFileSync(join(fixture.webDist, "octm-bootstrap.js"), "utf8")
+      assert.equal(installedBootstrap.includes(`from "./octm/runtime.mjs?rev=${rev}"`), true)
+      assert.equal(installedBootstrap.includes("installBootstrap(globalThis)"), true)
+      assert.equal(countOf(installedBootstrap, "__OCTM_REV__"), 0)
       for (const name of MODULE_FILES) {
         const installed = readFileSync(join(fixture.webDist, "octm", name))
         assert.equal(sha256(installed), sha256(readFileSync(join(adapterDir, name))), `${name} copied verbatim`)
@@ -312,11 +327,14 @@ if (!powershell) {
       assert.equal(patchedBytes.toString("utf8"), expectedPatched, "patched asset is the manifest output")
       assert.equal(patchedBytes.includes("__octm"), true)
 
+      const tags = indexTags(rev)
       const index = readFileSync(fixture.indexPath, "utf8")
-      for (const tag of INDEX_TAGS) assert.equal(countOf(index, tag), 1, `${tag} appears once`)
-      const sequence = `${INDEX_TAGS.join("\n    ")}\n    <script type="module" crossorigin src="/assets/main-boot.js"></script>`
+      for (const tag of tags) assert.equal(countOf(index, tag), 1, `${tag} appears once`)
+      assert.match(index, /\?rev=[0-9a-f]{8}/)
+      assert.equal(countOf(index, `?rev=${rev}`), 3, "all three tags carry the same revision")
+      const sequence = `${tags.join("\n    ")}\n    <script type="module" crossorigin src="/assets/main-boot.js"></script>`
       assert.equal(index.includes(sequence), true, "tags sit immediately before the entry script")
-      assert.equal(index.indexOf(INDEX_TAGS[0]) < index.indexOf("/assets/main-boot.js"), true)
+      assert.equal(index.indexOf(tags[0]) < index.indexOf("/assets/main-boot.js"), true)
 
       const backupDirs = readdirSync(fixture.backupRoot)
       assert.equal(backupDirs.length, 1)
@@ -326,6 +344,7 @@ if (!powershell) {
       assert.equal(sha256(readFileSync(join(backupDir, "useAppFontEffects-test.js"))), fixture.assetSha)
       const backupManifest = JSON.parse(readFileSync(join(backupDir, "manifest.json"), "utf8"))
       assert.equal(backupManifest.version, PATCH_MANIFEST.version)
+      assert.equal(backupManifest.rev, rev)
       assert.equal(backupManifest.pinned, PATCH_MANIFEST.sha256)
       assert.equal(backupManifest.files.length, 2)
       for (const entry of backupManifest.files) {
@@ -336,6 +355,7 @@ if (!powershell) {
 
       const record = JSON.parse(readFileSync(fixture.recordPath, "utf8"))
       assert.equal(record.version, PATCH_MANIFEST.version)
+      assert.equal(record.rev, rev)
       assert.equal(Number.isNaN(Date.parse(record.installedAt)), false)
       assert.equal(record.assetSha256, sha256(patchedBytes))
       assert.equal(record.backupDir, backupDir)
@@ -358,22 +378,27 @@ if (!powershell) {
     test("a second apply is a no-op that reports already-installed", t => {
       const fixture = makeFixture()
       t.after(() => rmSync(fixture.root, { recursive: true, force: true }))
+      const rev = adapterRev(adapterDir)
       const first = runInstaller(applyArgs(fixture))
       assert.equal(first.code, 0, first.output)
       const recordBefore = readFileSync(fixture.recordPath)
       const indexBefore = readFileSync(fixture.indexPath)
+      const bootstrapBefore = readFileSync(join(fixture.webDist, "octm-bootstrap.js"))
       const before = snapshot(fixture.webDist)
 
       const second = runInstaller(applyArgs(fixture))
       assert.equal(second.code, 0, second.output)
       assert.match(second.output, /already installed \(version 2\.5\.2\)/)
       assert.match(second.output, /result: already-installed/)
+      assert.equal(second.output.includes(`revision: ${rev}`), true)
       assert.deepEqual(snapshot(fixture.webDist), before)
       assert.equal(readFileSync(fixture.recordPath).equals(recordBefore), true)
       assert.equal(readFileSync(fixture.indexPath).equals(indexBefore), true)
+      assert.equal(readFileSync(join(fixture.webDist, "octm-bootstrap.js")).equals(bootstrapBefore), true)
+      assert.equal(JSON.parse(readFileSync(fixture.recordPath, "utf8")).rev, rev)
 
       const index = readFileSync(fixture.indexPath, "utf8")
-      for (const tag of INDEX_TAGS) assert.equal(countOf(index, tag), 1, `${tag} not duplicated`)
+      for (const tag of indexTags(rev)) assert.equal(countOf(index, tag), 1, `${tag} not duplicated`)
 
       const dry = runInstaller(["-WebDist", fixture.webDist])
       assert.equal(dry.code, 0, dry.output)
@@ -409,7 +434,8 @@ if (!powershell) {
       assert.equal(existsSync(join(fixture.assets, "main-test.js")), true)
 
       const index = readFileSync(fixture.indexPath, "utf8")
-      for (const tag of INDEX_TAGS) assert.equal(countOf(index, tag), 0)
+      assert.equal(index.includes("?rev="), false)
+      for (const tag of indexTags(adapterRev(adapterDir))) assert.equal(countOf(index, tag), 0)
     })
 
     test("recorded paths outside the install root are ignored by drift and apply", t => {
@@ -541,7 +567,109 @@ if (!powershell) {
       assert.equal(existsSync(join(fixture.webDist, "octm")), false)
       assert.equal(existsSync(fixture.backupRoot), false)
       const index = readFileSync(fixture.indexPath, "utf8")
-      for (const tag of INDEX_TAGS) assert.equal(countOf(index, tag), 0)
+      for (const tag of indexTags(adapterRev(adapterDir))) assert.equal(countOf(index, tag), 0)
+    })
+
+    test("apply replaces adapter tags from another revision without duplicating them", t => {
+      const fixture = makeFixture()
+      t.after(() => rmSync(fixture.root, { recursive: true, force: true }))
+      const rev = adapterRev(adapterDir)
+      const entryTag = '    <script type="module" crossorigin src="/assets/main-boot.js"></script>'
+      const staleTags = indexTags("deadbeef").map(tag => `    ${tag}`).join("\n")
+      const tagged = INDEX_HTML.replace(entryTag, `${staleTags}\n${entryTag}`)
+      writeFileSync(fixture.indexPath, tagged, "utf8")
+
+      const dry = runInstaller(["-WebDist", fixture.webDist, "-ExpectedSha256", fixture.assetSha])
+      assert.equal(dry.code, 0, dry.output)
+      assert.match(dry.output, /would add 3 adapter tags before \/assets\/main-boot\.js/)
+      assert.equal(readFileSync(fixture.indexPath, "utf8"), tagged, "the dry run leaves the stale tags alone")
+
+      const applied = runInstaller(applyArgs(fixture))
+      assert.equal(applied.code, 0, applied.output)
+      const index = readFileSync(fixture.indexPath, "utf8")
+      for (const tag of indexTags(rev)) assert.equal(countOf(index, tag), 1)
+      assert.equal(index.includes("deadbeef"), false)
+      assert.equal(countOf(index, 'src="/octm-config.js'), 1)
+      assert.equal(countOf(index, 'src="/octm-fallback.js'), 1)
+      assert.equal(countOf(index, 'src="/octm-bootstrap.js'), 1)
+    })
+
+    test("an install whose recorded revision is not current is drift, repaired by rollback then apply", t => {
+      const fixture = makeFixture()
+      t.after(() => rmSync(fixture.root, { recursive: true, force: true }))
+      const rev = adapterRev(adapterDir)
+      const applied = runInstaller(applyArgs(fixture))
+      assert.equal(applied.code, 0, applied.output)
+
+      const struckIndex = readFileSync(fixture.indexPath, "utf8").split(`?rev=${rev}`).join("")
+      writeFileSync(fixture.indexPath, struckIndex, "utf8")
+      const struckSha = sha256(Buffer.from(struckIndex, "utf8"))
+      rewriteRecord(fixture, record => {
+        delete record.rev
+        for (const entry of record.files) {
+          if (entry.path.split(sep).join("/") === fixture.indexPath.split(sep).join("/")) entry.sha256 = struckSha
+        }
+        record.indexHtmlSha256 = struckSha
+      })
+      const before = snapshot(fixture.webDist)
+
+      const dry = runInstaller(["-WebDist", fixture.webDist])
+      assert.equal(dry.code, 1, dry.output)
+      assert.match(dry.output, /result: refused/)
+      assert.match(dry.output, /the adapter revision drifted: recorded revision \(none\) is not [0-9a-f]{8}/)
+      assert.match(dry.output, /index\.html does not reference the adapter tags for revision [0-9a-f]{8}/)
+      assert.deepEqual(snapshot(fixture.webDist), before, "a refused install writes nothing")
+
+      const rollback = runInstaller(["-WebDist", fixture.webDist, "-Rollback"])
+      assert.equal(rollback.code, 0, rollback.output)
+      assert.match(rollback.output, /result: rollback-complete/)
+      assert.equal(readFileSync(fixture.indexPath).equals(fixture.indexBytes), true)
+      assert.equal(readFileSync(fixture.indexPath, "utf8").includes("?rev="), false)
+      assert.equal(existsSync(join(fixture.webDist, "octm-bootstrap.js")), false)
+
+      const reapplied = runInstaller(applyArgs(fixture))
+      assert.equal(reapplied.code, 0, reapplied.output)
+      assert.equal(JSON.parse(readFileSync(fixture.recordPath, "utf8")).rev, rev)
+      const index = readFileSync(fixture.indexPath, "utf8")
+      for (const tag of indexTags(rev)) assert.equal(countOf(index, tag), 1)
+    })
+
+    test("changing one adapter module changes the revision in a fresh tree", t => {
+      const cloneRoot = mkdtempSync(join(tmpdir(), "octm-clone-"))
+      const clone = join(cloneRoot, "repo")
+      mkdirSync(clone, { recursive: true })
+      cpSync(join(repoRoot, "scripts"), join(clone, "scripts"), { recursive: true })
+      cpSync(join(repoRoot, "integrations"), join(clone, "integrations"), { recursive: true })
+      const cloneInstaller = join(clone, "scripts", "install-openchamber-adapter.ps1")
+      const cloneAdapterDir = join(clone, "integrations", "openchamber")
+      const first = makeFixture()
+      const second = makeFixture()
+      t.after(() => {
+        rmSync(first.root, { recursive: true, force: true })
+        rmSync(second.root, { recursive: true, force: true })
+        rmSync(cloneRoot, { recursive: true, force: true })
+      })
+
+      const revBefore = adapterRev(cloneAdapterDir)
+      assert.match(revBefore, /^[0-9a-f]{8}$/)
+      const appliedBefore = runInstaller(applyArgs(first), {}, cloneInstaller)
+      assert.equal(appliedBefore.code, 0, appliedBefore.output)
+      assert.equal(JSON.parse(readFileSync(first.recordPath, "utf8")).rev, revBefore)
+
+      const modulePath = join(cloneAdapterDir, "mention-source.mjs")
+      writeFileSync(modulePath, `${readFileSync(modulePath, "utf8")}\n// fixture revision bump\n`, "utf8")
+      const revAfter = adapterRev(cloneAdapterDir)
+      assert.match(revAfter, /^[0-9a-f]{8}$/)
+      assert.notEqual(revAfter, revBefore)
+
+      const appliedAfter = runInstaller(applyArgs(second), {}, cloneInstaller)
+      assert.equal(appliedAfter.code, 0, appliedAfter.output)
+      assert.equal(JSON.parse(readFileSync(second.recordPath, "utf8")).rev, revAfter)
+      const bootstrap = readFileSync(join(second.webDist, "octm-bootstrap.js"), "utf8")
+      assert.equal(bootstrap.includes(`from "./octm/runtime.mjs?rev=${revAfter}"`), true)
+      const index = readFileSync(second.indexPath, "utf8")
+      for (const tag of indexTags(revAfter)) assert.equal(countOf(index, tag), 1)
+      assert.equal(index.includes(revBefore), false)
     })
   })
 }
