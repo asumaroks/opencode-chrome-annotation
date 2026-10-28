@@ -6,7 +6,7 @@ Annotate any page in Chrome and send the screenshot, selected element metadata, 
 
 This is an independent, modified distribution maintained by [asumaroks](https://github.com/asumaroks/opencode-chrome-annotation), derived from an upstream project released under [GPL-3.0-only](LICENSE). It is not the upstream Chrome Web Store distribution. Modification notice: 2026-10-27; see [MODIFICATIONS.json](MODIFICATIONS.json). The project remains licensed under GPL-3.0-only, and the full license text is included in this repository.
 
-https://github.com/user-attachments/assets/bdee8a15-6720-4e57-b28d-ee6440722b71
+https://github.com/user-attachments/assets/b97bd005-7be0-4a0b-a0bf-c948f8893f9f
 
 
 ## Install
