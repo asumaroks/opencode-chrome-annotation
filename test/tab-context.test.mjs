@@ -290,6 +290,58 @@ test("delivered cancellations reach the worker and safe errors reach only the pa
   assert.equal(JSON.stringify(result.body).includes(p.extensionCap), false)
 })
 
+test("the launcher origin is honoured for adapter routes only when the build declares an allowlisted origin", async () => {
+  const launcherHeader = { "x-tab-context-launcher": launcher }
+  const configured = await fixture({ adapterOrigins: [adapter, launcher] })
+
+  const begin = await configured.call("begin", {}, undefined, extension)
+  assert.equal(begin.status, 201)
+  const paired = await configured.call("pair", { code: begin.body.code }, undefined, null, launcherHeader)
+  assert.equal(paired.status, 201)
+  assert.equal(typeof paired.body.capability, "string")
+  assert.equal((await configured.call("pair", { code: begin.body.code }, undefined, null, launcherHeader)).status, 403)
+
+  const connectionId = paired.body.connectionId
+  const started = await configured.call("request", { connectionId, kind: "list", draft }, paired.body.capability, null, launcherHeader)
+  assert.equal(started.status, 202)
+  const jobs = await configured.call("poll", { connectionId }, begin.body.capability, extension)
+  assert.equal(jobs.body.jobs.length, 1)
+  const reply = { connectionId, requestId: started.body.requestId, draft, status: "ok", result: { tabs: [] } }
+  assert.equal((await configured.call("reply", reply, begin.body.capability, extension)).status, 200)
+  const result = await configured.call("result", { connectionId, requestId: started.body.requestId }, paired.body.capability, null, launcherHeader)
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.body.result.tabs, [])
+
+  const pending = await configured.call("request", { connectionId, kind: "list", draft }, paired.body.capability, null, launcherHeader)
+  assert.equal(pending.status, 202)
+  assert.equal((await configured.call("cancel", { connectionId, requestId: pending.body.requestId }, paired.body.capability, null, launcherHeader)).status, 200)
+
+  assert.equal(
+    (await configured.call("request", { connectionId, kind: "list", draft }, paired.body.capability, adapter)).status,
+    401
+  )
+  assert.equal((await configured.call("request", { connectionId, kind: "list", draft }, paired.body.capability, null)).status, 403)
+  for (const declared of ["http://127.0.0.1:5199", "openchamber-ui://app/", "openchamber-ui://other", "null", "*", ""]) {
+    const refused = await configured.call("request", { connectionId, kind: "list", draft }, paired.body.capability, "null", {
+      "x-tab-context-launcher": declared,
+    })
+    assert.equal(refused.status, 403, declared)
+    assert.equal(refused.body.error, "untrusted-origin", declared)
+  }
+
+  assert.equal((await configured.call("begin", {}, undefined, null, launcherHeader)).status, 403)
+  assert.equal((await configured.call("begin", {}, undefined, "null", launcherHeader)).status, 403)
+  assert.equal((await configured.call("poll", { connectionId }, begin.body.capability, null, launcherHeader)).status, 403)
+  assert.equal((await configured.call("reply", reply, begin.body.capability, "null", launcherHeader)).status, 403)
+  assert.equal((await configured.call("begin", {}, undefined, "https://evil.example", launcherHeader)).status, 403)
+
+  const unconfigured = await fixture()
+  const code = (await unconfigured.call("begin", {}, undefined, extension)).body.code
+  assert.equal((await unconfigured.call("pair", { code }, undefined, null, launcherHeader)).status, 403)
+  assert.equal((await unconfigured.call("pair", { code }, undefined, "null", launcherHeader)).status, 403)
+  assert.equal((await unconfigured.call("pair", { code }, undefined, extension, launcherHeader)).status, 403)
+})
+
 test("trusted preflight is narrow and untrusted verbs fail closed", async () => {
   const f = await fixture()
   const preflight = await fetch(`http://127.0.0.1:${f.port}/tab-context/v1/request`, {
@@ -303,10 +355,15 @@ test("trusted preflight is narrow and untrusted verbs fail closed", async () => 
   assert.equal(preflight.status, 200)
   assert.equal(preflight.headers.get("access-control-allow-origin"), adapter)
   assert.equal(preflight.headers.get("cache-control"), "no-store")
+  assert.equal(preflight.headers.get("access-control-allow-headers"), "content-type,x-tab-context-capability,x-tab-context-launcher")
 
-  const launcherPreflight = await fetch(`http://127.0.0.1:${f.port}/tab-context/v1/request`, {
+  const launcherPreflight = await fetch(`http://127.0.0.1:${f.port}/tab-context/v1/pair`, {
     method: "OPTIONS",
-    headers: { origin: launcher, "access-control-request-method": "POST" },
+    headers: {
+      origin: launcher,
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type,x-tab-context-capability,x-tab-context-launcher",
+    },
   })
   assert.equal(launcherPreflight.status, 403)
 
@@ -317,6 +374,17 @@ test("trusted preflight is narrow and untrusted verbs fail closed", async () => 
   })
   assert.equal(launcherAllowed.status, 200)
   assert.equal(launcherAllowed.headers.get("access-control-allow-origin"), launcher)
+
+  const launcherHeaders = await fetch(`http://127.0.0.1:${configured.port}/tab-context/v1/request`, {
+    method: "OPTIONS",
+    headers: {
+      origin: launcher,
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type,x-tab-context-launcher",
+    },
+  })
+  assert.equal(launcherHeaders.status, 200)
+  assert.equal(launcherHeaders.headers.get("access-control-allow-headers"), "content-type,x-tab-context-capability,x-tab-context-launcher")
 
   const forbiddenHeader = await fetch(`http://127.0.0.1:${f.port}/tab-context/v1/request`, {
     method: "OPTIONS",

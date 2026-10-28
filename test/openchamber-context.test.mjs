@@ -889,11 +889,11 @@ after(async () => {
   }
 })
 
-async function bridgeFixture() {
+async function bridgeFixture(options = {}) {
   const bridge = createTabContextBridge({
     instanceId: "instance",
     directory: "/repo",
-    adapterOrigins: [adapterOrigin],
+    adapterOrigins: options.adapterOrigins ?? [adapterOrigin],
     extensionOrigins: [extensionOrigin],
   })
   const server = createServer((req, res) => {
@@ -938,28 +938,39 @@ async function bridgeFixture() {
   return { port, origin, call, nextJob }
 }
 
+function nodeTransport(sentHeaders, loggedHeaders, log, url, init = {}) {
+  log.push({ url, headers: loggedHeaders })
+  const target = new URL(url)
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: target.hostname, port: target.port, path: `${target.pathname}${target.search}`, method: init.method ?? "GET", headers: sentHeaders },
+      res => {
+        let data = ""
+        res.setEncoding("utf8")
+        res.on("data", chunk => (data += chunk))
+        res.on("end", () => resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          json: async () => (data ? JSON.parse(data) : null),
+        }))
+      }
+    )
+    req.on("error", reject)
+    req.end(typeof init.body === "string" ? init.body : undefined)
+  })
+}
+
 function httpTransport(origin, log) {
   return async (url, init = {}) => {
     const headers = { ...(init.headers ?? {}) }
-    log.push({ url, headers })
-    const target = new URL(url)
-    return await new Promise((resolve, reject) => {
-      const req = httpRequest(
-        { host: target.hostname, port: target.port, path: `${target.pathname}${target.search}`, method: init.method ?? "GET", headers: { ...headers, origin } },
-        res => {
-          let data = ""
-          res.setEncoding("utf8")
-          res.on("data", chunk => (data += chunk))
-          res.on("end", () => resolve({
-            ok: res.statusCode >= 200 && res.statusCode < 300,
-            status: res.statusCode,
-            json: async () => (data ? JSON.parse(data) : null),
-          }))
-        }
-      )
-      req.on("error", reject)
-      req.end(typeof init.body === "string" ? init.body : undefined)
-    })
+    return nodeTransport({ ...headers, origin }, headers, log, url, init)
+  }
+}
+
+function launcherTransport(log) {
+  return async (url, init = {}) => {
+    const headers = { ...(init.headers ?? {}) }
+    return nodeTransport(headers, headers, log, url, init)
   }
 }
 
@@ -1071,6 +1082,63 @@ test("the adapter lists real bridge tabs through the bridge mention client", asy
   assert.deepEqual(drafts[0][0], { directory: "/repo", sessionKey: "draft" })
   assert.deepEqual(composer.edits, [[0, 1, ""]])
   assert.equal(adapter.isSendBlocked(), false)
+})
+
+test("the launcher client declares its origin on every adapter route and on no other request", async () => {
+  const launcher = "openchamber-ui://app"
+  const fixture = await bridgeFixture({ adapterOrigins: [launcher] })
+  const log = []
+  const client = createTabContextClient({
+    baseUrl: fixture.origin,
+    origin: launcher,
+    fetchImpl: launcherTransport(log),
+    pollIntervalMs: 2,
+    timeoutMs: 5000,
+  })
+  const begin = await fixture.call("begin", {}, undefined, extensionOrigin)
+  assert.equal(begin.status, 201)
+  const paired = await client.pair(begin.body.code)
+  assert.equal(client.isPaired(), true)
+
+  const listPromise = client.listTabs(draft)
+  const listJob = await fixture.nextJob(paired.connectionId, begin.body.capability, "list")
+  await fixture.call("reply", {
+    connectionId: paired.connectionId,
+    requestId: listJob.requestId,
+    draft,
+    status: "ok",
+    result: { tabs: [{ tabRef: tabA.tabRef, url: tabA.url, documentId: tabA.documentId, title: tabA.title, windowId: tabA.windowId }] },
+  }, begin.body.capability, extensionOrigin)
+  assert.deepEqual((await listPromise).tabs.map(tab => tab.tabRef), [tabA.tabRef])
+
+  const capturePromise = client.captureTab(draft, target)
+  const captureJob = await fixture.nextJob(paired.connectionId, begin.body.capability, "capture")
+  await fixture.call("reply", {
+    connectionId: paired.connectionId,
+    requestId: captureJob.requestId,
+    draft,
+    status: "ok",
+    result: captureResult,
+  }, begin.body.capability, extensionOrigin)
+  assert.equal((await capturePromise).text, captureResult.text)
+
+  const started = await client.request("list", { draft })
+  assert.equal(started.status, "pending")
+  const cancelled = await fixture.nextJob(paired.connectionId, begin.body.capability, "list")
+  assert.equal(await client.cancel(cancelled.requestId), true)
+
+  const routeOf = entry => new URL(entry.url).pathname
+  const declaredOn = entries => [...new Set(entries.map(entry => routeOf(entry).replace("/tab-context/v1/", "")))].sort()
+  const adapterEntries = log.filter(entry => routeOf(entry).startsWith("/tab-context/v1/"))
+  const statusEntries = log.filter(entry => routeOf(entry) === "/status")
+  assert.deepEqual(declaredOn(adapterEntries), ["cancel", "pair", "request", "result"])
+  assert.equal(adapterEntries.every(entry => entry.headers["x-tab-context-launcher"] === launcher), true)
+  assert.equal(statusEntries.length, 1)
+  assert.equal(statusEntries.every(entry => entry.headers["x-tab-context-launcher"] === undefined), true)
+  assert.equal(log.every(entry => !Object.keys(entry.headers).some(name => name.toLowerCase() === "origin")), true)
+  assert.equal(log.every(entry => new URL(entry.url).host === new URL(fixture.origin).host), true)
+  const capability = log.find(entry => entry.headers["x-tab-context-capability"]).headers["x-tab-context-capability"]
+  assert.equal(log.some(entry => entry.url.includes(capability) || entry.url.includes(launcher)), false)
 })
 
 test("a foreign adapter origin is rejected as untrusted-origin", async () => {

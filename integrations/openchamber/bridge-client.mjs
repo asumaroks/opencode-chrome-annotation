@@ -2,6 +2,7 @@ import { errorText } from "./mention-source.mjs"
 
 const ROUTE_PREFIX = "/tab-context/v1/"
 const STATUS_PATH = "/status"
+const LAUNCHER_HEADER = "x-tab-context-launcher"
 const APP_ID = "opencode-chrome-annotation"
 const LOOPBACK_HOST = "127.0.0.1"
 const MAX_PORT_SPAN = 64
@@ -249,7 +250,7 @@ export function createTabContextClient(options = {}) {
   }
 
   async function post(target, route, body, capability) {
-    const headers = { "content-type": "application/json" }
+    const headers = { "content-type": "application/json", [LAUNCHER_HEADER]: origin }
     if (capability) headers["x-tab-context-capability"] = capability
     let response
     try {

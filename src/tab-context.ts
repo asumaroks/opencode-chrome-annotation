@@ -42,11 +42,14 @@ export interface TabContextBridge {
 }
 
 const LAUNCHER_ADAPTER_ORIGIN = "openchamber-ui://app";
+const LAUNCHER_HEADER = "x-tab-context-launcher";
+const ALLOWED_HEADERS = ["content-type", "x-tab-context-capability", LAUNCHER_HEADER];
 const EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/[a-p]{32}$/;
 const PREFIX = "/tab-context/";
 const V1_PREFIX = "/tab-context/v1/";
 const ROUTES = ["begin", "pair", "request", "poll", "reply", "result", "cancel"];
 const EXTENSION_ROUTES = ["begin", "poll", "reply"];
+const ADAPTER_ROUTES = ["pair", "request", "result", "cancel"];
 const LIMITS = { textCharacters: 24000, packetBytes: 131072, tabs: 100, requestTtlMs: 15000 };
 const BODY_LIMIT_BYTES = 131072;
 const BODY_TIMEOUT_MS = 5000;
@@ -191,6 +194,14 @@ export function createTabContextBridge(options: TabContextBridgeOptions): TabCon
   const extensions = new Set(options.extensionOrigins.filter(isChromeExtensionOrigin));
   const isTrustedExtensionOrigin = (origin: string): boolean =>
     isChromeExtensionOrigin(origin) || extensions.has(origin);
+  const declaredLauncherOrigin = (req: IncomingMessage, adapterRoute: boolean): string | null => {
+    if (!adapterRoute) return null;
+    const origin = req.headers.origin;
+    if (typeof origin === "string" && origin !== "null") return null;
+    const declared = req.headers[LAUNCHER_HEADER];
+    if (typeof declared !== "string" || !isTrustedAdapterOrigin(declared) || !adapters.has(declared)) return null;
+    return declared;
+  };
   const connections = new Map<string, Connection>();
   const jobs = new Map<string, Job>();
   let attempts = 0;
@@ -245,15 +256,18 @@ export function createTabContextBridge(options: TabContextBridgeOptions): TabCon
       ) {
         reject(403, "untrusted-host");
       }
-      const origin = req.headers.origin;
+      const route = path.startsWith(V1_PREFIX) ? path.slice(V1_PREFIX.length) : "";
+      const origin =
+        typeof req.headers.origin === "string" && req.headers.origin !== "null"
+          ? req.headers.origin
+          : declaredLauncherOrigin(req, ADAPTER_ROUTES.includes(route));
       if (typeof origin !== "string" || (!adapters.has(origin) && !isTrustedExtensionOrigin(origin))) {
         reject(403, "untrusted-origin");
       }
-      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Origin", typeof req.headers.origin === "string" ? req.headers.origin : origin);
       res.setHeader("Vary", "Origin");
       if (req.url !== path) reject(400, "query-forbidden");
-      const route = path.slice(V1_PREFIX.length);
-      if (!path.startsWith(V1_PREFIX) || !ROUTES.includes(route)) reject(404, "unknown-route");
+      if (!route || !ROUTES.includes(route)) reject(404, "unknown-route");
 
       if (req.method === "OPTIONS") {
         if (req.headers["access-control-request-method"] !== "POST") reject(405, "post-required");
@@ -262,11 +276,11 @@ export function createTabContextBridge(options: TabContextBridgeOptions): TabCon
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean);
-        if (headers.some((header) => !["content-type", "x-tab-context-capability"].includes(header))) {
+        if (headers.some((header) => !ALLOWED_HEADERS.includes(header))) {
           reject(403, "untrusted-header");
         }
         res.setHeader("Access-Control-Allow-Methods", "POST");
-        res.setHeader("Access-Control-Allow-Headers", "content-type,x-tab-context-capability");
+        res.setHeader("Access-Control-Allow-Headers", ALLOWED_HEADERS.join(","));
         send(200, { ok: true });
         return true;
       }

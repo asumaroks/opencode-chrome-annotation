@@ -9,11 +9,14 @@ import { fileURLToPath, pathToFileURL } from "url";
 // src/tab-context.ts
 import { randomBytes, randomInt, timingSafeEqual } from "crypto";
 var LAUNCHER_ADAPTER_ORIGIN = "openchamber-ui://app";
+var LAUNCHER_HEADER = "x-tab-context-launcher";
+var ALLOWED_HEADERS = ["content-type", "x-tab-context-capability", LAUNCHER_HEADER];
 var EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/[a-p]{32}$/;
 var PREFIX = "/tab-context/";
 var V1_PREFIX = "/tab-context/v1/";
 var ROUTES = ["begin", "pair", "request", "poll", "reply", "result", "cancel"];
 var EXTENSION_ROUTES = ["begin", "poll", "reply"];
+var ADAPTER_ROUTES = ["pair", "request", "result", "cancel"];
 var LIMITS = { textCharacters: 24000, packetBytes: 131072, tabs: 100, requestTtlMs: 15000 };
 var BODY_LIMIT_BYTES = 131072;
 var BODY_TIMEOUT_MS = 5000;
@@ -148,6 +151,17 @@ function createTabContextBridge(options) {
   const adapters = new Set(options.adapterOrigins.filter(isTrustedAdapterOrigin));
   const extensions = new Set(options.extensionOrigins.filter(isChromeExtensionOrigin));
   const isTrustedExtensionOrigin = (origin) => isChromeExtensionOrigin(origin) || extensions.has(origin);
+  const declaredLauncherOrigin = (req, adapterRoute) => {
+    if (!adapterRoute)
+      return null;
+    const origin = req.headers.origin;
+    if (typeof origin === "string" && origin !== "null")
+      return null;
+    const declared = req.headers[LAUNCHER_HEADER];
+    if (typeof declared !== "string" || !isTrustedAdapterOrigin(declared) || !adapters.has(declared))
+      return null;
+    return declared;
+  };
   const connections = new Map;
   const jobs = new Map;
   let attempts = 0;
@@ -197,26 +211,26 @@ function createTabContextBridge(options) {
       if (host !== `127.0.0.1:${req.socket.localPort}` || !["127.0.0.1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "")) {
         reject(403, "untrusted-host");
       }
-      const origin = req.headers.origin;
+      const route = path.startsWith(V1_PREFIX) ? path.slice(V1_PREFIX.length) : "";
+      const origin = typeof req.headers.origin === "string" && req.headers.origin !== "null" ? req.headers.origin : declaredLauncherOrigin(req, ADAPTER_ROUTES.includes(route));
       if (typeof origin !== "string" || !adapters.has(origin) && !isTrustedExtensionOrigin(origin)) {
         reject(403, "untrusted-origin");
       }
-      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Origin", typeof req.headers.origin === "string" ? req.headers.origin : origin);
       res.setHeader("Vary", "Origin");
       if (req.url !== path)
         reject(400, "query-forbidden");
-      const route = path.slice(V1_PREFIX.length);
-      if (!path.startsWith(V1_PREFIX) || !ROUTES.includes(route))
+      if (!route || !ROUTES.includes(route))
         reject(404, "unknown-route");
       if (req.method === "OPTIONS") {
         if (req.headers["access-control-request-method"] !== "POST")
           reject(405, "post-required");
         const headers = String(req.headers["access-control-request-headers"] ?? "").toLowerCase().split(",").map((item) => item.trim()).filter(Boolean);
-        if (headers.some((header) => !["content-type", "x-tab-context-capability"].includes(header))) {
+        if (headers.some((header) => !ALLOWED_HEADERS.includes(header))) {
           reject(403, "untrusted-header");
         }
         res.setHeader("Access-Control-Allow-Methods", "POST");
-        res.setHeader("Access-Control-Allow-Headers", "content-type,x-tab-context-capability");
+        res.setHeader("Access-Control-Allow-Headers", ALLOWED_HEADERS.join(","));
         send(200, { ok: true });
         return true;
       }
