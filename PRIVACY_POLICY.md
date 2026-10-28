@@ -4,7 +4,7 @@ Published in the Chrome Web Store (item `hgccbnndicphelekihogaacgplgdcelo`) on 2
 
 This policy describes the independent, modified distribution of OpenCode Chrome Annotation maintained in [asumaroks/opencode-chrome-annotation](https://github.com/asumaroks/opencode-chrome-annotation). It is derived from an upstream project released under [GPL-3.0-only](LICENSE), and the full license text is included in this repository. It does not describe the upstream Chrome Web Store listing.
 
-The disclosures below describe the reviewed implementation, not a legal compliance guarantee. This distribution's Chrome Web Store listing was published on 2026-10-28 as item `hgccbnndicphelekihogaacgplgdcelo`; version 1.0.4 is in store review, so a build of this repository can be newer than the published version.
+The disclosures below describe the reviewed implementation, not a legal compliance guarantee. This distribution's Chrome Web Store listing was published on 2026-10-28 as item `hgccbnndicphelekihogaacgplgdcelo`; version 1.0.4 was published on 2026-10-28 and version 1.0.5 is a package metadata update in store review, so a build of this repository can be newer than the published version.
 
 ## What this extension does
 
