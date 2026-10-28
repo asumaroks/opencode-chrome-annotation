@@ -14,6 +14,7 @@ import {
   createChromeRows,
   createMentionLayout,
   deriveMentionQuery,
+  errorText,
   filterChromeRows,
   mentionIndexAt,
   ROW_KIND,
@@ -687,7 +688,7 @@ test("a valid pairing code reaches pair once and closes the dialog on success", 
   assert.equal(findByAttribute(dialog.element, "role", "alert").textContent, "")
 })
 
-test("a rejected pairing code keeps the dialog open and shows the failure text", async () => {
+test("a rejected pairing code keeps the dialog open and shows the reason the plugin gave", async () => {
   const { document } = fakeDom()
   const onRequestPairing = createDefaultPairing({
     document,
@@ -700,8 +701,50 @@ test("a rejected pairing code keeps the dialog open and shows the failure text",
   assert.deepEqual(dialog.submit("12345678"), { ok: true })
   await drain()
   assert.equal(dialog.element.closes, 0)
-  assert.equal(message.textContent.includes("Pairing failed"), true)
+  assert.equal(message.textContent, `${errorText("pairing-failed")} (pairing-failed)`)
   assert.deepEqual(dialog.submit("123"), { ok: false })
+  assert.equal(dialog.element.closes, 0)
+})
+
+test("every pairing failure names its own reason and never echoes the code", async () => {
+  const generic = "Pairing failed. Check the code and the plugin origin, then try again."
+  const cases = [
+    ["untrusted-origin", Object.assign(new Error("rejected"), { code: "untrusted-origin" }), errorText("untrusted-origin")],
+    ["pairing-failed", Object.assign(new Error("rejected"), { code: "pairing-failed" }), `${errorText("pairing-failed")} (pairing-failed)`],
+    ["rate-limited string rejection", "rate-limited", `${errorText("rate-limited")} (rate-limited)`],
+    ["unknown rejection", new Error("boom"), generic],
+  ]
+  for (const [name, rejection, expected] of cases) {
+    const { document } = fakeDom()
+    const onRequestPairing = createDefaultPairing({ document, origin: adapterOrigin, pair: () => Promise.reject(rejection) })
+    const dialog = onRequestPairing()
+    const message = findByAttribute(dialog.element, "role", "alert")
+    const input = findByAttribute(dialog.element, "id", "octm-pairing-code")
+    input.value = "12345678"
+    findByAttribute(dialog.element, "type", "submit").dispatch("click")
+    await drain()
+    assert.equal(message.textContent, expected, name)
+    assert.equal(message.textContent.includes("12345678"), false, name)
+    assert.equal(message.textContent.includes("127.0.0.1"), false, name)
+    assert.equal(input.value, "12345678", name)
+    assert.equal(dialog.element.closes, 0, name)
+  }
+})
+
+test("a synchronous pairing rejection shows the same coded reason", async () => {
+  const { document } = fakeDom()
+  const onRequestPairing = createDefaultPairing({
+    document,
+    origin: adapterOrigin,
+    pair: () => {
+      throw Object.assign(new Error("rejected"), { code: "untrusted-origin" })
+    },
+  })
+  const dialog = onRequestPairing()
+  const message = findByAttribute(dialog.element, "role", "alert")
+  assert.deepEqual(dialog.submit("12345678"), { ok: true })
+  await drain()
+  assert.equal(message.textContent, errorText("untrusted-origin"))
   assert.equal(dialog.element.closes, 0)
 })
 

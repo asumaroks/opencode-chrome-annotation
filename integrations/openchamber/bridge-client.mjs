@@ -1,3 +1,5 @@
+import { errorText } from "./mention-source.mjs"
+
 const ROUTE_PREFIX = "/tab-context/v1/"
 const STATUS_PATH = "/status"
 const APP_ID = "opencode-chrome-annotation"
@@ -18,6 +20,19 @@ export const CLIENT_ERROR_CODES = Object.freeze([...new Set([
   "invalid-response",
   ...CAPTURE_ERROR_CODES,
 ])])
+
+const PAIRING_FAILURE_TEXT = "Pairing failed. Check the code and the plugin origin, then try again."
+
+const PAIRING_TRANSPORT_CODES = Object.freeze([
+  "pairing-failed",
+  "rate-limited",
+  "timeout",
+  "unauthorized",
+  "pairing-required",
+  "unavailable",
+  "invalid-response",
+  "request-expired",
+])
 
 const SERVER_ERROR_CODES = Object.freeze({
   "untrusted-origin": "untrusted-origin",
@@ -396,6 +411,18 @@ function setStyle(element, declarations) {
   element.setAttribute("style", text)
 }
 
+function pairingErrorCode(value) {
+  if (!value || typeof value !== "object") return ""
+  return typeof value.code === "string" && value.code ? value.code : ""
+}
+
+function pairingFailureText(value) {
+  const code = pairingErrorCode(value)
+  if (!CLIENT_ERROR_CODES.includes(code)) return PAIRING_FAILURE_TEXT
+  const text = errorText(code)
+  return PAIRING_TRANSPORT_CODES.includes(code) ? `${text} (${code})` : text
+}
+
 export function createPairingDialog(options = {}) {
   const document = options.document
   if (!document || typeof document.createElement !== "function") throw new Error("a document is required")
@@ -512,12 +539,12 @@ export function createPairingDialog(options = {}) {
     let pending
     try {
       pending = onPair(code)
-    } catch {
-      message.textContent = "Pairing failed. Check the code and the plugin origin, then try again."
+    } catch (error) {
+      message.textContent = pairingFailureText(error)
       return { ok: true }
     }
-    Promise.resolve(pending).catch(() => {
-      message.textContent = "Pairing failed. Check the code and the plugin origin, then try again."
+    Promise.resolve(pending).catch(error => {
+      message.textContent = pairingFailureText(error)
     })
     return { ok: true }
   }
