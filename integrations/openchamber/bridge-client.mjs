@@ -391,6 +391,11 @@ export function createBridgeMentionClient(client) {
   }
 }
 
+function setStyle(element, declarations) {
+  const text = Object.keys(declarations).map(name => `${name}:${declarations[name]}`).join(";")
+  element.setAttribute("style", text)
+}
+
 export function createPairingDialog(options = {}) {
   const document = options.document
   if (!document || typeof document.createElement !== "function") throw new Error("a document is required")
@@ -401,13 +406,37 @@ export function createPairingDialog(options = {}) {
   const element = document.createElement("dialog")
   element.className = "octm-pairing-dialog"
   element.setAttribute("aria-labelledby", "octm-pairing-title")
+  setStyle(element, {
+    position: "fixed",
+    inset: "0",
+    margin: "auto",
+    width: "min(420px, calc(100vw - 32px))",
+    height: "fit-content",
+    padding: "20px 22px",
+    border: "1px solid var(--border, #3a3a3a)",
+    "border-radius": "14px",
+    background: "var(--surface-background, #1c1c1c)",
+    color: "var(--foreground, #ececec)",
+    "box-shadow": "0 18px 48px rgba(0,0,0,.45)",
+    display: "flex",
+    "flex-direction": "column",
+    gap: "12px",
+    "font-size": "14px",
+    "line-height": "1.45",
+    "z-index": "2147483000",
+  })
+
+  const backdrop = document.createElement("style")
+  backdrop.textContent = ".octm-pairing-dialog::backdrop { background: rgba(0,0,0,.45) } .octm-pairing-dialog:not([open]) { display: none !important }"
 
   const heading = document.createElement("h2")
   heading.setAttribute("id", "octm-pairing-title")
   heading.textContent = "Connect Chrome tabs"
+  setStyle(heading, { "font-size": "16px", margin: "0" })
 
   const instructions = document.createElement("p")
   instructions.textContent = `Open the Chrome extension options page, choose this OpenChamber instance, and copy the 8-digit pairing code. The adapter origin ${origin} must already be trusted by the plugin.`
+  setStyle(instructions, { margin: "0", opacity: ".8" })
 
   const label = document.createElement("label")
   label.setAttribute("for", "octm-pairing-code")
@@ -420,19 +449,54 @@ export function createPairingDialog(options = {}) {
   input.setAttribute("inputmode", "numeric")
   input.setAttribute("autocomplete", "one-time-code")
   input.setAttribute("maxlength", "8")
+  setStyle(input, {
+    width: "100%",
+    "box-sizing": "border-box",
+    padding: "10px 12px",
+    "font-size": "18px",
+    "letter-spacing": "3px",
+    "text-align": "center",
+    "border-radius": "10px",
+    border: "1px solid var(--border, #3a3a3a)",
+    background: "var(--surface-muted, #252525)",
+    color: "inherit",
+    "font-variant-numeric": "tabular-nums",
+  })
 
   const message = document.createElement("p")
   message.setAttribute("role", "alert")
+  setStyle(message, { margin: "0", "min-height": "1.4em", color: "var(--destructive, #e5484d)" })
+
+  const actions = document.createElement("div")
+  setStyle(actions, { display: "flex", gap: "8px", "justify-content": "flex-end" })
 
   const submitButton = document.createElement("button")
   submitButton.setAttribute("type", "submit")
   submitButton.textContent = "Pair"
+  setStyle(submitButton, {
+    padding: "8px 16px",
+    border: "0",
+    "border-radius": "10px",
+    background: "var(--primary, #edb449)",
+    color: "var(--primary-foreground, #151313)",
+    "font-weight": "600",
+    cursor: "pointer",
+  })
 
   const cancelButton = document.createElement("button")
   cancelButton.setAttribute("type", "button")
   cancelButton.textContent = "Cancel"
+  setStyle(cancelButton, {
+    padding: "8px 14px",
+    border: "1px solid var(--border, #3a3a3a)",
+    "border-radius": "10px",
+    background: "transparent",
+    color: "inherit",
+    cursor: "pointer",
+  })
 
-  element.append(heading, instructions, label, input, message, submitButton, cancelButton)
+  actions.append(submitButton, cancelButton)
+  element.append(backdrop, heading, instructions, label, input, message, actions)
 
   function close() {
     element.close()
@@ -470,5 +534,11 @@ export function createPairingDialog(options = {}) {
     close()
   })
 
-  return { element, open: () => element.showModal(), close, submit }
+  function open() {
+    element.showModal()
+    input.focus()
+    input.select()
+  }
+
+  return { element, open, close, submit }
 }

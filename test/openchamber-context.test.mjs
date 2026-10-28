@@ -592,6 +592,8 @@ function fakeDom() {
         value: "",
         opens: 0,
         closes: 0,
+        focuses: 0,
+        selections: 0,
         setAttribute(name, value) {
           element.attributes[name] = `${value}`
         },
@@ -613,12 +615,28 @@ function fakeDom() {
         showModal() {
           element.opens++
         },
+        focus() {
+          element.focuses++
+        },
+        select() {
+          element.selections++
+        },
       }
       created.push(element)
       return element
     },
   }
   return { document, body, created }
+}
+
+function styleOf(element) {
+  const declarations = {}
+  for (const part of (element.attributes.style ?? "").split(";")) {
+    const separator = part.indexOf(":")
+    if (separator < 0) continue
+    declarations[part.slice(0, separator).trim()] = part.slice(separator + 1).trim()
+  }
+  return declarations
 }
 
 function dialogsOf(created) {
@@ -709,6 +727,83 @@ test("the pairing dialog ignores Enter while an IME composition is active", asyn
   await drain()
   assert.deepEqual(codes, ["12345678"])
   assert.equal(dialog.element.closes, 1)
+})
+
+test("the pairing dialog carries its own inline layout so host CSS cannot collapse it", () => {
+  const { document } = fakeDom()
+  const onRequestPairing = createDefaultPairing({ document, origin: adapterOrigin, pair: () => Promise.resolve({ connectionId: "connection" }) })
+  const dialog = onRequestPairing()
+  const dialogStyle = styleOf(dialog.element)
+  assert.equal(dialog.element.className, "octm-pairing-dialog")
+  assert.equal(dialogStyle.position, "fixed")
+  assert.equal(dialogStyle.inset, "0")
+  assert.equal(dialogStyle.margin, "auto")
+  assert.equal(dialogStyle.height, "fit-content")
+  assert.equal(dialogStyle.display, "flex")
+  assert.equal(dialogStyle["flex-direction"], "column")
+  assert.equal(dialogStyle["z-index"], "2147483000")
+  assert.equal(dialogStyle.width.startsWith("min(420px"), true)
+  assert.equal(dialogStyle.padding.trim().length > 0, true)
+  assert.equal(dialogStyle["font-size"], "14px")
+  assert.equal(dialogStyle["line-height"], "1.45")
+  assert.equal(dialogStyle.background.includes("--surface-background"), true)
+  assert.equal(dialogStyle.color.includes("--foreground"), true)
+
+  const styles = dialog.element.children.filter(child => child.tag === "style")
+  assert.equal(styles.length, 1)
+  assert.equal(styles[0].textContent.includes(".octm-pairing-dialog::backdrop { background: rgba(0,0,0,.45) }"), true)
+  assert.equal(styles[0].textContent.includes(".octm-pairing-dialog:not([open]) { display: none !important }"), true)
+  assert.equal(dialog.element.children[0], styles[0])
+
+  const heading = findByAttribute(dialog.element, "id", "octm-pairing-title")
+  assert.equal(styleOf(heading)["font-size"], "16px")
+  assert.equal(styleOf(heading).margin, "0")
+
+  const inputStyle = styleOf(findByAttribute(dialog.element, "id", "octm-pairing-code"))
+  assert.equal(inputStyle.width, "100%")
+  assert.equal(inputStyle["box-sizing"], "border-box")
+  assert.equal(inputStyle.padding.trim().length > 0, true)
+  assert.equal(inputStyle["font-size"], "18px")
+  assert.equal(inputStyle["text-align"], "center")
+  assert.equal(inputStyle["font-variant-numeric"], "tabular-nums")
+  assert.equal(inputStyle.border.includes("var(--border"), true)
+
+  const messageStyle = styleOf(findByAttribute(dialog.element, "role", "alert"))
+  assert.equal(messageStyle.margin, "0")
+  assert.equal(messageStyle["min-height"], "1.4em")
+  assert.equal(messageStyle.color.includes("--destructive"), true)
+
+  const actions = dialog.element.children.find(child => child.tag === "div")
+  const actionStyle = styleOf(actions)
+  assert.equal(actionStyle.display, "flex")
+  assert.equal(actionStyle.gap, "8px")
+  assert.equal(actionStyle["justify-content"], "flex-end")
+  assert.deepEqual(actions.children.map(child => child.textContent), ["Pair", "Cancel"])
+
+  const submitStyle = styleOf(findByAttribute(dialog.element, "type", "submit"))
+  assert.equal(submitStyle.padding, "8px 16px")
+  assert.equal(submitStyle.border, "0")
+  assert.equal(submitStyle.background.includes("--primary,"), true)
+  assert.equal(submitStyle["font-weight"], "600")
+  const cancelStyle = styleOf(findByAttribute(dialog.element, "type", "button"))
+  assert.equal(cancelStyle.padding, "8px 14px")
+  assert.equal(cancelStyle.border.includes("1px solid"), true)
+  assert.equal(cancelStyle.background, "transparent")
+})
+
+test("opening the pairing dialog focuses and selects the code input without rebuilding it", () => {
+  const { document, created } = fakeDom()
+  const onRequestPairing = createDefaultPairing({ document, origin: adapterOrigin, pair: () => Promise.resolve({ connectionId: "connection" }) })
+  const first = onRequestPairing()
+  const input = findByAttribute(first.element, "id", "octm-pairing-code")
+  assert.equal(input.focuses, 1)
+  assert.equal(input.selections, 1)
+  const second = onRequestPairing()
+  assert.equal(second, first)
+  assert.equal(input.focuses, 2)
+  assert.equal(input.selections, 2)
+  assert.equal(dialogsOf(created).length, 1)
+  assert.equal(first.element.children.filter(child => child.tag === "style").length, 1)
 })
 
 test("installing without a document leaves the pairing seam unset", () => {
