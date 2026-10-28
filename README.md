@@ -68,7 +68,7 @@ Pairing is a one-time step per connection:
 
 1. Open the extension options page and keep it open; closing or reloading it disconnects context sharing.
 2. Choose the OpenCode instance and click **Get pairing code**.
-3. Copy the 8-digit code into the composer dialog within 60 seconds. The code is single use and the connection lasts five minutes.
+3. Type `@` in the composer, choose **Connect Chrome…**, and paste the 8-digit code into the pairing dialog within 60 seconds. The code is single use and the connection lasts five minutes.
 4. Under **Allow one site**, pick the origin of a tab you want to use and click **Allow selected site**. Chrome asks for that origin only, and granting it captures nothing by itself.
 
 Only `http` and `https` tabs that are not incognito, not loading and exposing an active main document are listed. Host access is optional and granted one origin at a time: the manifest declares `<all_urls>` only as an optional host permission, so a site without permission reports a missing-access error until you allow it.

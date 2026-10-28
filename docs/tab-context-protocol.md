@@ -80,10 +80,12 @@ exactly once and deletes the job.
 
 1. The extension calls `begin` from its own origin and receives `{connectionId, capability, code,
    expiresAt}`. The connection is unpaired and expires after 60 s unless pairing completes.
-2. The user copies the 8-digit `code` into the OpenChamber composer dialog, which calls `pair` from
-   the adapter origin. A successful `pair` consumes the code (a second attempt gets `403
-   invalid-code`), records the adapter origin, mints a second capability and extends the connection
-   to 300 s.
+2. The user copies the 8-digit `code` into the pairing dialog that the **Connect Chrome…** row of the
+   `@` menu opens. The dialog names the adapter origin that must already be trusted, edits the code in a
+   numeric 8-digit input, submits on the Pair button or on `Enter` (ignored while an IME composition is
+   active), calls `pair` from the adapter origin and shows fixed failure text in place while staying open.
+   A successful `pair` consumes the code (a second attempt gets `403 invalid-code`), records the adapter
+   origin, mints a second capability and extends the connection to 300 s.
 3. Pairing attempts are limited to 5 per rolling 60 s window, shared by every origin
    (`429 pairing-rate-limit`).
 4. Either side may drop the connection at any time; `close()` clears all connections and jobs, and a

@@ -17,6 +17,14 @@ without changing the installed build as well, otherwise the repo and the app dri
 - `patch-manifest.mjs` – the pinned patch set that threads `__octm` into the minified asset, the seam contract
   and the patch application helpers.
 
+## Pairing
+
+An unpaired adapter shows a single **Connect Chrome…** row instead of tab rows. Selecting it opens the pairing
+dialog: `createDefaultPairing` in `runtime.mjs` builds it on first use, appends it to `document.body` and reopens
+the same element afterwards. The dialog names the adapter origin, takes the 8-digit code the extension options
+page shows after **Get pairing code**, and posts it through the client's `pair`. A failed attempt keeps the
+dialog open with the failure text, a successful one closes it so the next `@` lists tabs.
+
 ## Seam contract
 
 The patched asset publishes `globalThis.__octmNative` with synchronous handles:

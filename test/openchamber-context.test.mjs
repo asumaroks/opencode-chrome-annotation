@@ -28,6 +28,7 @@ import {
   mentionMenuPatches,
   orderedPatches,
 } from "../integrations/openchamber/patch-manifest.mjs"
+import { createDefaultPairing, installAdapterRuntime } from "../integrations/openchamber/runtime.mjs"
 import {
   countOccurrences,
   patchDelta,
@@ -568,6 +569,178 @@ test("a missing marker, an ambiguous marker or a foreign asset is refused", asyn
   const tampered = Buffer.concat([Buffer.from("x"), Buffer.from("y")])
   assert.equal(verifyAssetBytes(tampered).sha256.length, 64)
   assert.equal(verifyAssetBytes(tampered).sha256 !== PATCH_MANIFEST.sha256, true)
+})
+
+function fakeDom() {
+  const created = []
+  const body = {
+    children: [],
+    append(...nodes) {
+      body.children.push(...nodes)
+    },
+  }
+  const document = {
+    body,
+    createElement(tag) {
+      const element = {
+        tag,
+        attributes: {},
+        children: [],
+        listeners: {},
+        className: "",
+        textContent: "",
+        value: "",
+        opens: 0,
+        closes: 0,
+        setAttribute(name, value) {
+          element.attributes[name] = `${value}`
+        },
+        append(...nodes) {
+          element.children.push(...nodes)
+        },
+        addEventListener(type, listener) {
+          element.listeners[type] = [...(element.listeners[type] ?? []), listener]
+        },
+        dispatch(type, event = {}) {
+          let prevented = false
+          const payload = { key: "", isComposing: false, ...event, preventDefault: () => { prevented = true } }
+          for (const listener of element.listeners[type] ?? []) listener(payload)
+          return prevented
+        },
+        close() {
+          element.closes++
+        },
+        showModal() {
+          element.opens++
+        },
+      }
+      created.push(element)
+      return element
+    },
+  }
+  return { document, body, created }
+}
+
+function dialogsOf(created) {
+  return created.filter(element => element.tag === "dialog")
+}
+
+function findByAttribute(root, name, value) {
+  if (root.attributes && root.attributes[name] === value) return root
+  for (const child of root.children ?? []) {
+    const found = findByAttribute(child, name, value)
+    if (found) return found
+  }
+  return null
+}
+
+test("the pairing dialog is created once, appended to the body and reopened", () => {
+  const { document, body, created } = fakeDom()
+  const onRequestPairing = createDefaultPairing({ document, origin: adapterOrigin, pair: () => Promise.resolve({ connectionId: "connection" }) })
+  const first = onRequestPairing()
+  assert.equal(dialogsOf(created).length, 1)
+  assert.equal(body.children.length, 1)
+  assert.equal(body.children[0], first.element)
+  assert.equal(first.element.opens, 1)
+  const second = onRequestPairing()
+  assert.equal(second, first)
+  assert.equal(dialogsOf(created).length, 1)
+  assert.equal(body.children.length, 1)
+  assert.equal(first.element.opens, 2)
+})
+
+test("a valid pairing code reaches pair once and closes the dialog on success", async () => {
+  const { document } = fakeDom()
+  const codes = []
+  const onRequestPairing = createDefaultPairing({
+    document,
+    origin: adapterOrigin,
+    pair: code => {
+      codes.push(code)
+      return Promise.resolve({ connectionId: "connection" })
+    },
+  })
+  const dialog = onRequestPairing()
+  findByAttribute(dialog.element, "id", "octm-pairing-code").value = "12345678"
+  findByAttribute(dialog.element, "type", "submit").dispatch("click")
+  await drain()
+  assert.deepEqual(codes, ["12345678"])
+  assert.equal(dialog.element.closes, 1)
+  assert.equal(findByAttribute(dialog.element, "role", "alert").textContent, "")
+})
+
+test("a rejected pairing code keeps the dialog open and shows the failure text", async () => {
+  const { document } = fakeDom()
+  const onRequestPairing = createDefaultPairing({
+    document,
+    origin: adapterOrigin,
+    pair: () => Promise.reject(Object.assign(new Error("invalid-code"), { code: "pairing-failed" })),
+  })
+  const dialog = onRequestPairing()
+  const message = findByAttribute(dialog.element, "role", "alert")
+  assert.equal(message.textContent, "")
+  assert.deepEqual(dialog.submit("12345678"), { ok: true })
+  await drain()
+  assert.equal(dialog.element.closes, 0)
+  assert.equal(message.textContent.includes("Pairing failed"), true)
+  assert.deepEqual(dialog.submit("123"), { ok: false })
+  assert.equal(dialog.element.closes, 0)
+})
+
+test("the pairing dialog ignores Enter while an IME composition is active", async () => {
+  const { document } = fakeDom()
+  const codes = []
+  const onRequestPairing = createDefaultPairing({
+    document,
+    origin: adapterOrigin,
+    pair: code => {
+      codes.push(code)
+      return Promise.resolve({ connectionId: "connection" })
+    },
+  })
+  const dialog = onRequestPairing()
+  const input = findByAttribute(dialog.element, "id", "octm-pairing-code")
+  input.value = "12345678"
+  assert.equal(input.dispatch("keydown", { key: "Enter", isComposing: true }), false)
+  await drain()
+  assert.deepEqual(codes, [])
+  assert.equal(dialog.element.closes, 0)
+  assert.equal(input.dispatch("keydown", { key: "Enter", isComposing: false }), true)
+  await drain()
+  assert.deepEqual(codes, ["12345678"])
+  assert.equal(dialog.element.closes, 1)
+})
+
+test("installing without a document leaves the pairing seam unset", () => {
+  const scope = { __octmConfig: { origin: adapterOrigin } }
+  const runtime = installAdapterRuntime(scope)
+  assert.equal(runtime.seams.onRequestPairing, undefined)
+  const rows = runtime.adapter.rows()
+  assert.deepEqual(rows.map(row => [row.kind, row.disabled]), [[ROW_KIND.connect, false]])
+  assert.doesNotThrow(() => runtime.adapter.select(rows[0]))
+  assert.equal(runtime.status().paired, false)
+})
+
+test("installing with a document and a configured origin wires the pairing dialog", () => {
+  const { document, body } = fakeDom()
+  const scope = { document, __octmConfig: { origin: adapterOrigin } }
+  const runtime = installAdapterRuntime(scope, {
+    client: {
+      isPaired: () => false,
+      pair: () => Promise.resolve({ connectionId: "connection" }),
+      list: () => Promise.reject(new Error("unused")),
+      capture: () => Promise.reject(new Error("unused")),
+      cancel: () => Promise.resolve(false),
+    },
+  })
+  assert.equal(typeof runtime.seams.onRequestPairing, "function")
+  assert.equal(runtime.adapter.select(runtime.adapter.rows()[0]), true)
+  assert.equal(body.children.length, 1)
+  assert.equal(body.children[0].attributes["aria-labelledby"], "octm-pairing-title")
+  assert.equal(body.children[0].opens, 1)
+  runtime.adapter.select(runtime.adapter.rows()[0])
+  assert.equal(body.children.length, 1)
+  assert.equal(body.children[0].opens, 2)
 })
 
 const servers = []

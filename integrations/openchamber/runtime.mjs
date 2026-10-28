@@ -1,5 +1,5 @@
 import { createChromeMentionAdapter } from "./index.mjs"
-import { createBridgeMentionClient, createTabContextClient } from "./bridge-client.mjs"
+import { createBridgeMentionClient, createPairingDialog, createTabContextClient } from "./bridge-client.mjs"
 import { deriveMentionQuery } from "./mention-source.mjs"
 import { ADAPTER_SEAMS, SEAM_CONTRACT } from "./patch-manifest.mjs"
 
@@ -104,16 +104,43 @@ export function createAdapterRuntime(options = {}) {
   return { adapter, status, seams, contract: SEAM_CONTRACT }
 }
 
+export function createDefaultPairing(options = {}) {
+  const document = options.document
+  const origin = options.origin
+  const pair = options.pair
+  let dialog = null
+
+  async function onPair(code) {
+    const result = await pair(code)
+    dialog.close()
+    return result
+  }
+
+  return function onRequestPairing() {
+    if (!dialog) {
+      dialog = createPairingDialog({ document, origin, onPair })
+      document.body.append(dialog.element)
+    }
+    dialog.open()
+    return dialog
+  }
+}
+
 export function installAdapterRuntime(scope = globalThis, options = {}) {
   if (!isObject(scope)) throw new Error("a global scope is required")
   if (isObject(scope.__octmRuntime)) return scope.__octmRuntime
   if (scope.__octm && !scope.__octm.__octmInert) throw new Error("__octm is already provided by another adapter")
   const config = isObject(options.config) ? options.config : isObject(scope.__octmConfig) ? scope.__octmConfig : {}
   const client = options.client ?? createConfiguredClient(config)
+  const origin = typeof config.origin === "string" ? config.origin : ""
+  let onRequestPairing = options.onRequestPairing
+  if (typeof onRequestPairing !== "function" && isObject(scope.document) && origin && client && typeof client.pair === "function") {
+    onRequestPairing = createDefaultPairing({ document: scope.document, origin, pair: code => client.pair(code) })
+  }
   const runtime = createAdapterRuntime({
     getNative: typeof options.getNative === "function" ? options.getNative : () => scope.__octmNative,
     client,
-    onRequestPairing: options.onRequestPairing,
+    onRequestPairing,
   })
   scope.__octm = runtime.adapter
   scope.__octmRuntime = runtime
