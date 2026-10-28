@@ -4,7 +4,7 @@
 
 Annotate any page in Chrome and send the screenshot, selected element metadata, and your instruction directly into [OpenCode](https://opencode.ai).
 
-This is an independent, modified distribution maintained by [asumaroks](https://github.com/asumaroks/opencode-chrome-annotation), based on [the upstream project](https://github.com/jodusnodus/opencode-chrome-annotation) by Benjamin Shafii. It is not the upstream Chrome Web Store distribution. Modification notice: 2026-10-27; see [MODIFICATIONS.json](MODIFICATIONS.json). Original authorship and copyright notices are retained, and the project remains licensed under [GPL-3.0-only](LICENSE).
+This is an independent, modified distribution maintained by [asumaroks](https://github.com/asumaroks/opencode-chrome-annotation), derived from an upstream project released under [GPL-3.0-only](LICENSE). It is not the upstream Chrome Web Store distribution. Modification notice: 2026-10-27; see [MODIFICATIONS.json](MODIFICATIONS.json). The project remains licensed under GPL-3.0-only, and the full license text is included in this repository.
 
 https://github.com/user-attachments/assets/bdee8a15-6720-4e57-b28d-ee6440722b71
 
