@@ -306,12 +306,28 @@ async function startAnnotationMode(tabOverride?: chrome.tabs.Tab): Promise<{ can
   const picked = await runAnnotationPicker(tab.id)
   if (!picked || picked.cancelled === true) return { cancelled: true }
 
+  try {
+    await hideConnectionOverlay(tab.id)
+  } catch (error) {
+    warnExtension("Failed to hide page overlays before annotation capture", {
+      tabId: tab.id,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
   logExtension("Capturing annotation screenshot", { tabId: tab.id, windowId: tab.windowId })
   const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" })
   logExtension("Captured annotation screenshot", {
     tabId: tab.id,
     bytesApprox: Math.round((screenshot.length * 3) / 4),
   })
+  try {
+    await injectConnectionOverlay(tab.id)
+  } catch (error) {
+    warnExtension("Failed to restore connection overlay after annotation capture", {
+      tabId: tab.id,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
 
   const annotationPayload: AnnotationPayload = {
     comment: picked.comment || "",
