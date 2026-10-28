@@ -46,15 +46,17 @@ exactly once and deletes the job.
 
 - The capability is sent in the `x-tab-context-capability` header, never in a URL, path, body or
   query string; there is no query-string route at all.
+- The launcher declaration is sent in the `x-tab-context-launcher` header, also never in a URL, path
+  or body. It carries only the adapter origin, never a capability.
 - Capabilities are 32 random bytes as base64url, minted per connection: one for the extension
   identity, a second for the adapter after pairing. Routes other than `begin` and `pair` require
   exactly one connection matching both origin and capability; anything else is `401 unauthorized`.
 - The header is compared with `timingSafeEqual` after a length check, so a wrong length and a wrong
   value cost the same work.
-- Preflight is narrow: `OPTIONS` must ask for `POST` and only for `content-type` and
-  `x-tab-context-capability`. Any other method is `405 post-required`, any other requested header is
-  `403 untrusted-header`, and an allowed preflight returns `200 {ok: true}` with
-  `Access-Control-Allow-Methods: POST` and the two allowed headers.
+- Preflight is narrow: `OPTIONS` must ask for `POST` and only for `content-type`,
+  `x-tab-context-capability` and `x-tab-context-launcher`. Any other method is `405 post-required`,
+  any other requested header is `403 untrusted-header`, and an allowed preflight returns
+  `200 {ok: true}` with `Access-Control-Allow-Methods: POST` and the three allowed headers.
 
 ## Trust
 
@@ -63,6 +65,15 @@ exactly once and deletes the job.
   rebinding and any non-loopback peer.
 - `Origin` is required and is checked twice: once against the combined allowlist and again against
   the role's own allowlist. A missing, `null` or unrecognised origin is `403 untrusted-origin`.
+- One documented exception exists for the custom-scheme launcher, whose page has no script-readable
+  origin. On the adapter routes (`pair`, `request`, `result`, `cancel`) only, a request with no
+  `Origin` header or `Origin: null` may carry `x-tab-context-launcher: <origin>`, the origin its
+  build was packaged with. The declaration is honoured only when that exact string is already an
+  entry of the configured adapter allowlist, and it is then used as the request origin for the role
+  check and for the connection binding. The header is never trusted for an extension route, never
+  overrides a real `Origin`, and does not replace authorization: an adapter still needs the 8-digit
+  one-time pairing code and the per-connection capability, so `Origin: null` from any other client
+  is still `403 untrusted-origin`.
 - Adapter origins come from `OPENCODE_TAB_CONTEXT_ADAPTER_ORIGINS` (comma separated) when set,
   otherwise from the JSON file at `OPENCODE_TAB_CONTEXT_CONFIG` (default
   `<package-root>/tab-context.json`), key `adapterOrigins`.

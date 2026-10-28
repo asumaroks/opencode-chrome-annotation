@@ -40,6 +40,11 @@ it never sends a message, it hands a captured page to the draft store and clears
 `4f288a1a01526447321b06f40adf7c2625252f570ecdd3afa1fee739ba860da6`, and ten patches with `order`, `action`
 (`replace` / `insertAfter` / `insertBefore`), the exact marker, its single recorded offset and `occurrences: 1`.
 
+The renderer caches ES modules by URL, so the installer content-addresses them: `octm-bootstrap.js` is written from
+the repo template with `__OCTM_REV__` replaced by an 8-hex revision (the first 8 hex chars of the SHA-256 over the
+six name-sorted module hashes), and `index.html` loads `/octm-config.js?rev=<rev>`, `/octm-fallback.js?rev=<rev>`
+and `/octm-bootstrap.js?rev=<rev>`, so any module change yields a new URL instead of a cached module.
+
 Verify an install read-only:
 
 ```bash

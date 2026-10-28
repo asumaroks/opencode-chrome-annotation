@@ -14,6 +14,7 @@ import {
   createChromeRows,
   createMentionLayout,
   deriveMentionQuery,
+  errorText,
   filterChromeRows,
   mentionIndexAt,
   ROW_KIND,
@@ -592,6 +593,8 @@ function fakeDom() {
         value: "",
         opens: 0,
         closes: 0,
+        focuses: 0,
+        selections: 0,
         setAttribute(name, value) {
           element.attributes[name] = `${value}`
         },
@@ -613,12 +616,28 @@ function fakeDom() {
         showModal() {
           element.opens++
         },
+        focus() {
+          element.focuses++
+        },
+        select() {
+          element.selections++
+        },
       }
       created.push(element)
       return element
     },
   }
   return { document, body, created }
+}
+
+function styleOf(element) {
+  const declarations = {}
+  for (const part of (element.attributes.style ?? "").split(";")) {
+    const separator = part.indexOf(":")
+    if (separator < 0) continue
+    declarations[part.slice(0, separator).trim()] = part.slice(separator + 1).trim()
+  }
+  return declarations
 }
 
 function dialogsOf(created) {
@@ -669,7 +688,7 @@ test("a valid pairing code reaches pair once and closes the dialog on success", 
   assert.equal(findByAttribute(dialog.element, "role", "alert").textContent, "")
 })
 
-test("a rejected pairing code keeps the dialog open and shows the failure text", async () => {
+test("a rejected pairing code keeps the dialog open and shows the reason the plugin gave", async () => {
   const { document } = fakeDom()
   const onRequestPairing = createDefaultPairing({
     document,
@@ -682,8 +701,50 @@ test("a rejected pairing code keeps the dialog open and shows the failure text",
   assert.deepEqual(dialog.submit("12345678"), { ok: true })
   await drain()
   assert.equal(dialog.element.closes, 0)
-  assert.equal(message.textContent.includes("Pairing failed"), true)
+  assert.equal(message.textContent, `${errorText("pairing-failed")} (pairing-failed)`)
   assert.deepEqual(dialog.submit("123"), { ok: false })
+  assert.equal(dialog.element.closes, 0)
+})
+
+test("every pairing failure names its own reason and never echoes the code", async () => {
+  const generic = "Pairing failed. Check the code and the plugin origin, then try again."
+  const cases = [
+    ["untrusted-origin", Object.assign(new Error("rejected"), { code: "untrusted-origin" }), errorText("untrusted-origin")],
+    ["pairing-failed", Object.assign(new Error("rejected"), { code: "pairing-failed" }), `${errorText("pairing-failed")} (pairing-failed)`],
+    ["rate-limited string rejection", "rate-limited", `${errorText("rate-limited")} (rate-limited)`],
+    ["unknown rejection", new Error("boom"), generic],
+  ]
+  for (const [name, rejection, expected] of cases) {
+    const { document } = fakeDom()
+    const onRequestPairing = createDefaultPairing({ document, origin: adapterOrigin, pair: () => Promise.reject(rejection) })
+    const dialog = onRequestPairing()
+    const message = findByAttribute(dialog.element, "role", "alert")
+    const input = findByAttribute(dialog.element, "id", "octm-pairing-code")
+    input.value = "12345678"
+    findByAttribute(dialog.element, "type", "submit").dispatch("click")
+    await drain()
+    assert.equal(message.textContent, expected, name)
+    assert.equal(message.textContent.includes("12345678"), false, name)
+    assert.equal(message.textContent.includes("127.0.0.1"), false, name)
+    assert.equal(input.value, "12345678", name)
+    assert.equal(dialog.element.closes, 0, name)
+  }
+})
+
+test("a synchronous pairing rejection shows the same coded reason", async () => {
+  const { document } = fakeDom()
+  const onRequestPairing = createDefaultPairing({
+    document,
+    origin: adapterOrigin,
+    pair: () => {
+      throw Object.assign(new Error("rejected"), { code: "untrusted-origin" })
+    },
+  })
+  const dialog = onRequestPairing()
+  const message = findByAttribute(dialog.element, "role", "alert")
+  assert.deepEqual(dialog.submit("12345678"), { ok: true })
+  await drain()
+  assert.equal(message.textContent, errorText("untrusted-origin"))
   assert.equal(dialog.element.closes, 0)
 })
 
@@ -709,6 +770,83 @@ test("the pairing dialog ignores Enter while an IME composition is active", asyn
   await drain()
   assert.deepEqual(codes, ["12345678"])
   assert.equal(dialog.element.closes, 1)
+})
+
+test("the pairing dialog carries its own inline layout so host CSS cannot collapse it", () => {
+  const { document } = fakeDom()
+  const onRequestPairing = createDefaultPairing({ document, origin: adapterOrigin, pair: () => Promise.resolve({ connectionId: "connection" }) })
+  const dialog = onRequestPairing()
+  const dialogStyle = styleOf(dialog.element)
+  assert.equal(dialog.element.className, "octm-pairing-dialog")
+  assert.equal(dialogStyle.position, "fixed")
+  assert.equal(dialogStyle.inset, "0")
+  assert.equal(dialogStyle.margin, "auto")
+  assert.equal(dialogStyle.height, "fit-content")
+  assert.equal(dialogStyle.display, "flex")
+  assert.equal(dialogStyle["flex-direction"], "column")
+  assert.equal(dialogStyle["z-index"], "2147483000")
+  assert.equal(dialogStyle.width.startsWith("min(420px"), true)
+  assert.equal(dialogStyle.padding.trim().length > 0, true)
+  assert.equal(dialogStyle["font-size"], "14px")
+  assert.equal(dialogStyle["line-height"], "1.45")
+  assert.equal(dialogStyle.background.includes("--surface-background"), true)
+  assert.equal(dialogStyle.color.includes("--foreground"), true)
+
+  const styles = dialog.element.children.filter(child => child.tag === "style")
+  assert.equal(styles.length, 1)
+  assert.equal(styles[0].textContent.includes(".octm-pairing-dialog::backdrop { background: rgba(0,0,0,.45) }"), true)
+  assert.equal(styles[0].textContent.includes(".octm-pairing-dialog:not([open]) { display: none !important }"), true)
+  assert.equal(dialog.element.children[0], styles[0])
+
+  const heading = findByAttribute(dialog.element, "id", "octm-pairing-title")
+  assert.equal(styleOf(heading)["font-size"], "16px")
+  assert.equal(styleOf(heading).margin, "0")
+
+  const inputStyle = styleOf(findByAttribute(dialog.element, "id", "octm-pairing-code"))
+  assert.equal(inputStyle.width, "100%")
+  assert.equal(inputStyle["box-sizing"], "border-box")
+  assert.equal(inputStyle.padding.trim().length > 0, true)
+  assert.equal(inputStyle["font-size"], "18px")
+  assert.equal(inputStyle["text-align"], "center")
+  assert.equal(inputStyle["font-variant-numeric"], "tabular-nums")
+  assert.equal(inputStyle.border.includes("var(--border"), true)
+
+  const messageStyle = styleOf(findByAttribute(dialog.element, "role", "alert"))
+  assert.equal(messageStyle.margin, "0")
+  assert.equal(messageStyle["min-height"], "1.4em")
+  assert.equal(messageStyle.color.includes("--destructive"), true)
+
+  const actions = dialog.element.children.find(child => child.tag === "div")
+  const actionStyle = styleOf(actions)
+  assert.equal(actionStyle.display, "flex")
+  assert.equal(actionStyle.gap, "8px")
+  assert.equal(actionStyle["justify-content"], "flex-end")
+  assert.deepEqual(actions.children.map(child => child.textContent), ["Pair", "Cancel"])
+
+  const submitStyle = styleOf(findByAttribute(dialog.element, "type", "submit"))
+  assert.equal(submitStyle.padding, "8px 16px")
+  assert.equal(submitStyle.border, "0")
+  assert.equal(submitStyle.background.includes("--primary,"), true)
+  assert.equal(submitStyle["font-weight"], "600")
+  const cancelStyle = styleOf(findByAttribute(dialog.element, "type", "button"))
+  assert.equal(cancelStyle.padding, "8px 14px")
+  assert.equal(cancelStyle.border.includes("1px solid"), true)
+  assert.equal(cancelStyle.background, "transparent")
+})
+
+test("opening the pairing dialog focuses and selects the code input without rebuilding it", () => {
+  const { document, created } = fakeDom()
+  const onRequestPairing = createDefaultPairing({ document, origin: adapterOrigin, pair: () => Promise.resolve({ connectionId: "connection" }) })
+  const first = onRequestPairing()
+  const input = findByAttribute(first.element, "id", "octm-pairing-code")
+  assert.equal(input.focuses, 1)
+  assert.equal(input.selections, 1)
+  const second = onRequestPairing()
+  assert.equal(second, first)
+  assert.equal(input.focuses, 2)
+  assert.equal(input.selections, 2)
+  assert.equal(dialogsOf(created).length, 1)
+  assert.equal(first.element.children.filter(child => child.tag === "style").length, 1)
 })
 
 test("installing without a document leaves the pairing seam unset", () => {
@@ -751,11 +889,11 @@ after(async () => {
   }
 })
 
-async function bridgeFixture() {
+async function bridgeFixture(options = {}) {
   const bridge = createTabContextBridge({
     instanceId: "instance",
     directory: "/repo",
-    adapterOrigins: [adapterOrigin],
+    adapterOrigins: options.adapterOrigins ?? [adapterOrigin],
     extensionOrigins: [extensionOrigin],
   })
   const server = createServer((req, res) => {
@@ -800,28 +938,39 @@ async function bridgeFixture() {
   return { port, origin, call, nextJob }
 }
 
+function nodeTransport(sentHeaders, loggedHeaders, log, url, init = {}) {
+  log.push({ url, headers: loggedHeaders })
+  const target = new URL(url)
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: target.hostname, port: target.port, path: `${target.pathname}${target.search}`, method: init.method ?? "GET", headers: sentHeaders },
+      res => {
+        let data = ""
+        res.setEncoding("utf8")
+        res.on("data", chunk => (data += chunk))
+        res.on("end", () => resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          json: async () => (data ? JSON.parse(data) : null),
+        }))
+      }
+    )
+    req.on("error", reject)
+    req.end(typeof init.body === "string" ? init.body : undefined)
+  })
+}
+
 function httpTransport(origin, log) {
   return async (url, init = {}) => {
     const headers = { ...(init.headers ?? {}) }
-    log.push({ url, headers })
-    const target = new URL(url)
-    return await new Promise((resolve, reject) => {
-      const req = httpRequest(
-        { host: target.hostname, port: target.port, path: `${target.pathname}${target.search}`, method: init.method ?? "GET", headers: { ...headers, origin } },
-        res => {
-          let data = ""
-          res.setEncoding("utf8")
-          res.on("data", chunk => (data += chunk))
-          res.on("end", () => resolve({
-            ok: res.statusCode >= 200 && res.statusCode < 300,
-            status: res.statusCode,
-            json: async () => (data ? JSON.parse(data) : null),
-          }))
-        }
-      )
-      req.on("error", reject)
-      req.end(typeof init.body === "string" ? init.body : undefined)
-    })
+    return nodeTransport({ ...headers, origin }, headers, log, url, init)
+  }
+}
+
+function launcherTransport(log) {
+  return async (url, init = {}) => {
+    const headers = { ...(init.headers ?? {}) }
+    return nodeTransport(headers, headers, log, url, init)
   }
 }
 
@@ -933,6 +1082,63 @@ test("the adapter lists real bridge tabs through the bridge mention client", asy
   assert.deepEqual(drafts[0][0], { directory: "/repo", sessionKey: "draft" })
   assert.deepEqual(composer.edits, [[0, 1, ""]])
   assert.equal(adapter.isSendBlocked(), false)
+})
+
+test("the launcher client declares its origin on every adapter route and on no other request", async () => {
+  const launcher = "openchamber-ui://app"
+  const fixture = await bridgeFixture({ adapterOrigins: [launcher] })
+  const log = []
+  const client = createTabContextClient({
+    baseUrl: fixture.origin,
+    origin: launcher,
+    fetchImpl: launcherTransport(log),
+    pollIntervalMs: 2,
+    timeoutMs: 5000,
+  })
+  const begin = await fixture.call("begin", {}, undefined, extensionOrigin)
+  assert.equal(begin.status, 201)
+  const paired = await client.pair(begin.body.code)
+  assert.equal(client.isPaired(), true)
+
+  const listPromise = client.listTabs(draft)
+  const listJob = await fixture.nextJob(paired.connectionId, begin.body.capability, "list")
+  await fixture.call("reply", {
+    connectionId: paired.connectionId,
+    requestId: listJob.requestId,
+    draft,
+    status: "ok",
+    result: { tabs: [{ tabRef: tabA.tabRef, url: tabA.url, documentId: tabA.documentId, title: tabA.title, windowId: tabA.windowId }] },
+  }, begin.body.capability, extensionOrigin)
+  assert.deepEqual((await listPromise).tabs.map(tab => tab.tabRef), [tabA.tabRef])
+
+  const capturePromise = client.captureTab(draft, target)
+  const captureJob = await fixture.nextJob(paired.connectionId, begin.body.capability, "capture")
+  await fixture.call("reply", {
+    connectionId: paired.connectionId,
+    requestId: captureJob.requestId,
+    draft,
+    status: "ok",
+    result: captureResult,
+  }, begin.body.capability, extensionOrigin)
+  assert.equal((await capturePromise).text, captureResult.text)
+
+  const started = await client.request("list", { draft })
+  assert.equal(started.status, "pending")
+  const cancelled = await fixture.nextJob(paired.connectionId, begin.body.capability, "list")
+  assert.equal(await client.cancel(cancelled.requestId), true)
+
+  const routeOf = entry => new URL(entry.url).pathname
+  const declaredOn = entries => [...new Set(entries.map(entry => routeOf(entry).replace("/tab-context/v1/", "")))].sort()
+  const adapterEntries = log.filter(entry => routeOf(entry).startsWith("/tab-context/v1/"))
+  const statusEntries = log.filter(entry => routeOf(entry) === "/status")
+  assert.deepEqual(declaredOn(adapterEntries), ["cancel", "pair", "request", "result"])
+  assert.equal(adapterEntries.every(entry => entry.headers["x-tab-context-launcher"] === launcher), true)
+  assert.equal(statusEntries.length, 1)
+  assert.equal(statusEntries.every(entry => entry.headers["x-tab-context-launcher"] === undefined), true)
+  assert.equal(log.every(entry => !Object.keys(entry.headers).some(name => name.toLowerCase() === "origin")), true)
+  assert.equal(log.every(entry => new URL(entry.url).host === new URL(fixture.origin).host), true)
+  const capability = log.find(entry => entry.headers["x-tab-context-capability"]).headers["x-tab-context-capability"]
+  assert.equal(log.some(entry => entry.url.includes(capability) || entry.url.includes(launcher)), false)
 })
 
 test("a foreign adapter origin is rejected as untrusted-origin", async () => {

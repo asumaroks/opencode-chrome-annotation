@@ -13,12 +13,10 @@ $InstallRecordName = ".octm-install.json"
 $BackupRootName = ".octm-backups"
 $MarkerToken = "__octm"
 $BootstrapFileNames = @("octm-config.js", "octm-fallback.js", "octm-bootstrap.js")
+$BootstrapTemplateName = "octm-bootstrap.js"
 $ModuleFileNames = @("runtime.mjs", "index.mjs", "draft-controller.mjs", "mention-source.mjs", "bridge-client.mjs", "patch-manifest.mjs")
-$IndexTags = @(
-  '<script src="/octm-config.js"></script>',
-  '<script src="/octm-fallback.js"></script>',
-  '<script type="module" crossorigin src="/octm-bootstrap.js"></script>'
-)
+$RevisionToken = "__OCTM_REV__"
+$AdapterTagPattern = '(?m)^[ \t]*<script\b[^>]*\bsrc="/(?:octm-config\.js|octm-fallback\.js|octm-bootstrap\.js)(?:\?rev=[^"]*)?"[^>]*>\s*</script>[ \t]*(?:\r?\n|$)'
 
 $script:NodeExe = $null
 
@@ -45,6 +43,39 @@ function Get-BytesSha256([byte[]]$Bytes) {
   } finally {
     if ($algorithm) { $algorithm.Dispose() }
   }
+}
+
+function Get-AdapterRevision {
+  param([string]$Directory, [string[]]$Names)
+  $ordered = [string[]]@($Names)
+  [Array]::Sort($ordered, [StringComparer]::Ordinal)
+  $builder = New-Object System.Text.StringBuilder
+  foreach ($name in $ordered) {
+    $path = Join-Path $Directory $name
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Refuse "the adapter module is missing in the repo: $path" }
+    [void]$builder.Append((Get-Sha256 $path))
+  }
+  if ($builder.Length -eq 0) { Refuse "the adapter revision needs at least one module hash" }
+  $combined = Get-BytesSha256 ([Text.Encoding]::UTF8.GetBytes($builder.ToString()))
+  return $combined.Substring(0, 8)
+}
+
+function Get-IndexTags([string]$Revision) {
+  return @(
+    ('<script src="/octm-config.js?rev=' + $Revision + '"></script>'),
+    ('<script src="/octm-fallback.js?rev=' + $Revision + '"></script>'),
+    ('<script type="module" crossorigin src="/octm-bootstrap.js?rev=' + $Revision + '"></script>')
+  )
+}
+
+function Test-IndexTags {
+  param([string]$Text, [string[]]$Tags)
+  $adapterTags = [regex]::Matches($Text, $AdapterTagPattern)
+  if ($adapterTags.Count -ne $Tags.Count) { return $false }
+  foreach ($tag in $Tags) {
+    if (([regex]::Matches($Text, [regex]::Escape($tag))).Count -ne 1) { return $false }
+  }
+  return $true
 }
 
 function Write-Line {
@@ -180,32 +211,29 @@ function Resolve-BackupCopy {
 }
 
 function Get-PatchedIndex {
-  param([string]$Text, [string]$EntryTag)
-  $already = $true
-  foreach ($tag in $IndexTags) {
-    if ($Text.IndexOf($tag, [StringComparison]::Ordinal) -lt 0) { $already = $false }
-  }
-  if ($already) { return [pscustomobject]@{ Text = $Text; Inserted = $false } }
+  param([string]$Text, [string]$EntryTag, [string[]]$Tags)
+  if (Test-IndexTags $Text $Tags) { return [pscustomobject]@{ Text = $Text; Inserted = $false } }
 
-  $entryIndex = $Text.IndexOf($EntryTag, [StringComparison]::Ordinal)
+  $stripped = [regex]::Replace($Text, $AdapterTagPattern, "")
+  $entryIndex = $stripped.IndexOf($EntryTag, [StringComparison]::Ordinal)
   if ($entryIndex -lt 0) { Refuse "the entry script tag moved while reading index.html" }
   $newline = "`n"
-  if ($Text.IndexOf("`r`n", [StringComparison]::Ordinal) -ge 0) { $newline = "`r`n" }
+  if ($stripped.IndexOf("`r`n", [StringComparison]::Ordinal) -ge 0) { $newline = "`r`n" }
   $lineStart = $entryIndex
   $indent = ""
   $scan = $entryIndex - 1
-  while ($scan -ge 0 -and ($Text[$scan] -eq " " -or $Text[$scan] -eq "`t")) { $scan-- }
-  if ($scan -lt 0 -or $Text[$scan] -eq "`n" -or $Text[$scan] -eq "`r") {
+  while ($scan -ge 0 -and ($stripped[$scan] -eq " " -or $stripped[$scan] -eq "`t")) { $scan-- }
+  if ($scan -lt 0 -or $stripped[$scan] -eq "`n" -or $stripped[$scan] -eq "`r") {
     $lineStart = $scan + 1
-    $indent = $Text.Substring($lineStart, $entryIndex - $lineStart)
+    $indent = $stripped.Substring($lineStart, $entryIndex - $lineStart)
   } else {
     $lineStart = $entryIndex
     $indent = ""
   }
   $insertion = ""
-  foreach ($tag in $IndexTags) { $insertion = $insertion + $indent + $tag + $newline }
+  foreach ($tag in $Tags) { $insertion = $insertion + $indent + $tag + $newline }
   return [pscustomobject]@{
-    Text = $Text.Substring(0, $lineStart) + $insertion + $Text.Substring($lineStart)
+    Text = $stripped.Substring(0, $lineStart) + $insertion + $stripped.Substring($lineStart)
     Inserted = $true
   }
 }
@@ -267,6 +295,15 @@ function Invoke-Rollback {
     Move-Item -LiteralPath $temp -Destination $target -Force
     Write-Line ("restored: " + $target)
   }
+  $restoredIndex = Join-Path $Root "index.html"
+  if (Test-Path -LiteralPath $restoredIndex -PathType Leaf) {
+    $restoredText = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($restoredIndex))
+    $cleanedText = [regex]::Replace($restoredText, $AdapterTagPattern, "")
+    if ($cleanedText -ne $restoredText) {
+      [IO.File]::WriteAllBytes($restoredIndex, [Text.Encoding]::UTF8.GetBytes($cleanedText))
+      Write-Line ("cleaned: removed leftover adapter tags from " + $restoredIndex)
+    }
+  }
   $added = @()
   if ($record.added) { $added = @($record.added) }
   $removed = 0
@@ -318,6 +355,13 @@ function Invoke-Install {
   if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { Refuse "index.html is missing: $indexPath" }
   if (-not (Test-Path -LiteralPath $assetsDir -PathType Container)) { Refuse "the assets directory is missing: $assetsDir" }
 
+  $adapterSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\integrations\openchamber"))
+  $bootstrapSource = Join-Path $adapterSource "web"
+  $revision = Get-AdapterRevision $adapterSource $ModuleFileNames
+  $indexTags = @(Get-IndexTags $revision)
+  $indexBytes = [IO.File]::ReadAllBytes($indexPath)
+  $indexText = Read-IndexText $indexBytes
+
   $record = $null
   $recordPaths = $null
   if (Test-Path -LiteralPath $recordPath) {
@@ -332,22 +376,32 @@ function Invoke-Install {
     $recordPaths = Split-RecordPaths $Root $record
     Write-OutsideNote $Root $recordPaths.Outside
     $drift = @(Get-RecordDrift $recordPaths.Inside)
-    if ($drift.Count -eq 0) {
+    $revisionDrift = @()
+    if ([string]$record.rev -ne $revision) {
+      $recordedRevision = [string]$record.rev
+      if (-not $recordedRevision) { $recordedRevision = "(none)" }
+      $revisionDrift += ("recorded revision " + $recordedRevision + " is not " + $revision)
+    }
+    if (-not (Test-IndexTags $indexText $indexTags)) {
+      $revisionDrift += ("index.html does not reference the adapter tags for revision " + $revision)
+    }
+    if ($drift.Count -eq 0 -and $revisionDrift.Count -eq 0) {
       Write-Line ("status: already installed (version " + [string]$record.version + ")")
       Write-Line ("asset: " + [string]$record.assetSha256)
+      Write-Line ("revision: " + [string]$record.rev)
       Write-Line ("backup: " + [string]$record.backupDir)
       if (-not $Apply) { Write-Line "dry run: nothing was written" }
       Write-Line "result: already-installed"
       exit 0
     }
     if (-not $Force) {
-      Refuse ("an install is recorded but these files changed since then: " + ($drift -join ", ") + " (use -Force to re-install)")
+      $reasons = @()
+      if ($drift.Count -gt 0) { $reasons += ("these files changed since then: " + ($drift -join ", ")) }
+      if ($revisionDrift.Count -gt 0) { $reasons += ("the adapter revision drifted: " + ($revisionDrift -join ", ")) }
+      Refuse (($reasons -join "; ") + " (use -Force to re-install)")
     }
-    Write-Line ("force: re-installing over a recorded install with " + $drift.Count + " changed path(s)")
+    Write-Line ("force: re-installing over a recorded install with " + ($drift.Count + $revisionDrift.Count) + " changed item(s)")
   }
-
-  $indexBytes = [IO.File]::ReadAllBytes($indexPath)
-  $indexText = Read-IndexText $indexBytes
 
   $entryPattern = '<script\b[^>]*\bsrc="(?<src>/assets/main-[A-Za-z0-9_-]+\.js)"[^>]*>\s*</script>'
   $entryMatches = [regex]::Matches($indexText, $entryPattern)
@@ -390,22 +444,31 @@ function Invoke-Install {
   }
   Write-Line ("asset: " + $assetPath)
   Write-Line ("asset sha256: " + $assetSha)
+  Write-Line ("adapter revision: " + $revision)
 
-  $adapterSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\integrations\openchamber"))
-  $bootstrapSource = Join-Path $adapterSource "web"
   $planned = New-Object System.Collections.ArrayList
   foreach ($name in $BootstrapFileNames) {
     $source = Join-Path $bootstrapSource $name
     $target = Join-Path $Root $name
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { Refuse "the adapter bootstrap file is missing in the repo: $source" }
-    [void]$planned.Add([pscustomobject]@{ Path = $target; Source = $source; Added = $true })
+    $bytes = $null
+    if ($name -eq $BootstrapTemplateName) {
+      $template = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($source))
+      if ($template.IndexOf($RevisionToken, [StringComparison]::Ordinal) -lt 0) {
+        Refuse ("the bootstrap template has no " + $RevisionToken + " token: " + $source)
+      }
+      $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($template.Replace($RevisionToken, $revision))
+    } else {
+      $bytes = [IO.File]::ReadAllBytes($source)
+    }
+    [void]$planned.Add([pscustomobject]@{ Path = $target; Source = $source; Bytes = $bytes; Added = $true })
   }
   $octmDir = Join-Path $Root "octm"
   foreach ($name in $ModuleFileNames) {
     $source = Join-Path $adapterSource $name
     $target = Join-Path $octmDir $name
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { Refuse "the adapter module is missing in the repo: $source" }
-    [void]$planned.Add([pscustomobject]@{ Path = $target; Source = $source; Added = $true })
+    [void]$planned.Add([pscustomobject]@{ Path = $target; Source = $source; Bytes = [IO.File]::ReadAllBytes($source); Added = $true })
   }
 
   $recordedPaths = @()
@@ -426,7 +489,7 @@ function Invoke-Install {
     Write-Line ("force: overwriting " + $foreign.Count + " unrecorded target file(s)")
   }
 
-  $patchedIndex = Get-PatchedIndex $indexText $entryTag
+  $patchedIndex = Get-PatchedIndex $indexText $entryTag $indexTags
 
   if (-not $Apply) {
     Write-Line ("would back up: " + $indexPath + " and " + $assetPath + " under " + $backupRoot)
@@ -498,6 +561,7 @@ function Invoke-Install {
     $backupManifest = [ordered]@{
       createdAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ")
       version = $version
+      rev = $revision
       pinned = $pinned
       index = $indexPath
       asset = $assetPath
@@ -528,7 +592,7 @@ function Invoke-Install {
     $writes = New-Object System.Collections.ArrayList
     [void]$writes.Add([pscustomobject]@{ Path = $assetPath; Bytes = $patchedAssetBytes; Added = $false })
     foreach ($item in $planned) {
-      [void]$writes.Add([pscustomobject]@{ Path = $item.Path; Bytes = [IO.File]::ReadAllBytes($item.Source); Added = $true })
+      [void]$writes.Add([pscustomobject]@{ Path = $item.Path; Bytes = $item.Bytes; Added = $true })
     }
     [void]$writes.Add([pscustomobject]@{ Path = $indexPath; Bytes = $patchedIndexBytes; Added = $false })
 
@@ -573,6 +637,7 @@ function Invoke-Install {
     }
     $recordObject = [ordered]@{
       version = $version
+      rev = $revision
       installedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ")
       assetSha256 = $patchedAssetSha
       backupDir = $backupDir

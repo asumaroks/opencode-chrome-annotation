@@ -7,6 +7,12 @@ function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
+function forwardedPairingFailure(error) {
+  if (isObject(error) || typeof error !== "string" || !error.trim()) return error
+  const code = error.trim()
+  return Object.assign(new Error(code), { code })
+}
+
 function parseNativeComposer(value) {
   if (!isObject(value)) return null
   const { runtimeKey, directory, draftId, sessionKey, text, caret, generation } = value
@@ -111,7 +117,12 @@ export function createDefaultPairing(options = {}) {
   let dialog = null
 
   async function onPair(code) {
-    const result = await pair(code)
+    let result
+    try {
+      result = await pair(code)
+    } catch (error) {
+      throw forwardedPairingFailure(error)
+    }
     dialog.close()
     return result
   }
