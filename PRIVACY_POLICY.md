@@ -25,6 +25,8 @@ When you share a tab from the page context menu instead of submitting an annotat
 
 Element metadata is not sent in the share flow, which has no element selection and no comment.
 
+Tab context is a separate, opt-in flow. When you select a Chrome tab in the OpenChamber composer, the extension reads the text of that tab's main document together with its title, URL and capture time and returns it over the local bridge. Form values, cookies, site storage, incognito tabs and screenshots are not collected, and the text is truncated at 24,000 characters with a flag when it was cut. The exchange stays on `127.0.0.1` between the extension, the plugin and the local OpenChamber UI, and nothing in this flow is sent to a third party. Pairing codes, capabilities and captured page text are held in memory only, and the bridge drops them on cancel, expiry or delivery.
+
 Page content, URLs, element text, and screenshots can contain personal or confidential information. Check what is visible before submitting an annotation or sharing a tab.
 
 ## How data is used

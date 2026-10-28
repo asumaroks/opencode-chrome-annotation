@@ -35,14 +35,22 @@ test("extension ZIP builds without npm or zip executables and excludes stale out
     const { unzipSync } = await import("fflate")
     const files = unzipSync(readFileSync(join(directory, "release", "opencode-chrome-annotation-extension.zip")))
     assert.deepEqual(Object.keys(files).sort(), [
-      "LICENSE", "MODIFICATIONS.json", "background.js", "icons/icon128.png", "icons/icon16.png", "icons/icon48.png", "injected/dom.js", "manifest.json",
+      "LICENSE", "MODIFICATIONS.json", "background.js", "icons/icon128.png", "icons/icon16.png", "icons/icon48.png", "injected/dom.js", "manifest.json", "options.css", "options.html", "options.js",
     ].sort())
     const manifest = JSON.parse(Buffer.from(files["manifest.json"]).toString())
     assert.equal(manifest.manifest_version, 3)
     assert.equal(manifest.version, JSON.parse(readFileSync(join(root, "extension-src", "manifest.json"))).version)
-    for (const file of [manifest.background.service_worker, ...Object.values(manifest.icons), ...manifest.web_accessible_resources.flatMap((entry) => entry.resources)]) {
+    assert.ok(manifest.permissions.includes("webNavigation"))
+    assert.deepEqual(manifest.options_ui, { page: "options.html", open_in_tab: true })
+    for (const file of [manifest.background.service_worker, manifest.options_ui.page, ...Object.values(manifest.icons), ...manifest.web_accessible_resources.flatMap((entry) => entry.resources)]) {
       assert.ok(files[file]?.length > 0, `Missing manifest asset: ${file}`)
     }
+    const optionsHtml = Buffer.from(files["options.html"]).toString()
+    assert.match(optionsHtml, /src="options\.js"/)
+    assert.match(optionsHtml, /href="options\.css"/)
+    assert.deepEqual(Buffer.from(files["options.html"]), readFileSync(join(root, "extension-src", "options.html")))
+    assert.deepEqual(Buffer.from(files["options.css"]), readFileSync(join(root, "extension-src", "options.css")))
+    assert.match(Buffer.from(files["options.js"]).toString(), /\/tab-context\/v1\//)
     assert.deepEqual(Buffer.from(files.LICENSE), readFileSync(join(root, "LICENSE")))
     for (const size of [16, 48, 128]) {
       const png = Buffer.from(files[`icons/icon${size}.png`])

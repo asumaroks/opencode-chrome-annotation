@@ -4,10 +4,14 @@ import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { createServer, type Server } from "http";
 import { fileURLToPath, pathToFileURL } from "url";
+import { createTabContextBridge, type TabContextBridge } from "./tab-context";
+
+export { createTabContextBridge } from "./tab-context";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PACKAGE_JSON_PATH = join(__dirname, "..", "package.json");
+const TAB_CONTEXT_CONFIG_PATH = process.env.OPENCODE_TAB_CONTEXT_CONFIG || join(__dirname, "..", "tab-context.json");
 
 const BASE_DIR = getRuntimeBaseDir();
 const LOG_PATH = join(BASE_DIR, "plugin.log");
@@ -37,13 +41,48 @@ interface PluginRuntime {
   lastExtensionVersion: string | null;
   sessionTitles: Map<string, string>;
   claims: Map<number, { sessionId: string; claimedAt: string; lastSeenAt: string; extensionVersion?: string }>;
+  tabContext: TabContextBridge;
+}
+
+function splitOrigins(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function readTabContextOrigins(
+  env: Record<string, string | undefined> = process.env,
+  configPath: string = TAB_CONTEXT_CONFIG_PATH
+): { adapterOrigins: string[]; extensionOrigins: string[] } {
+  const adapterFromEnv = splitOrigins(env.OPENCODE_TAB_CONTEXT_ADAPTER_ORIGINS);
+  const extensionFromEnv = splitOrigins(env.OPENCODE_TAB_CONTEXT_EXTENSION_ORIGINS);
+  let config: Record<string, unknown> | null = null;
+  if (!adapterFromEnv.length || !extensionFromEnv.length) {
+    try {
+      config = JSON.parse(readFileSync(configPath, "utf8"));
+    } catch {
+      config = null;
+    }
+  }
+  const adapterFromFile = Array.isArray(config?.adapterOrigins)
+    ? (config.adapterOrigins as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const extensionFromFile = Array.isArray(config?.extensionOrigins)
+    ? (config.extensionOrigins as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  return {
+    adapterOrigins: adapterFromEnv.length ? adapterFromEnv : adapterFromFile,
+    extensionOrigins: extensionFromEnv.length ? extensionFromEnv : extensionFromFile,
+  };
 }
 
 function createPluginRuntime(context: Plugin.Context): PluginRuntime {
   const directory = context.location.directory || process.cwd();
+  const sessionId = `${INSTANCE_SESSION_PREFIX}${Math.random().toString(36).slice(2)}`;
   return {
     context,
-    sessionId: `${INSTANCE_SESSION_PREFIX}${Math.random().toString(36).slice(2)}`,
+    sessionId,
     directory,
     label: buildSessionLabel(directory),
     listeningPort: null,
@@ -57,6 +96,7 @@ function createPluginRuntime(context: Plugin.Context): PluginRuntime {
     lastExtensionVersion: null,
     sessionTitles: new Map(),
     claims: new Map(),
+    tabContext: createTabContextBridge({ instanceId: sessionId, directory, ...readTabContextOrigins() }),
   };
 }
 
@@ -439,6 +479,7 @@ async function startServer(runtime: PluginRuntime): Promise<void> {
 
   for (let port = PORT_START; port <= PORT_END; port++) {
     const server = createServer(async (req, res) => {
+      if (await runtime.tabContext.handle(req, res)) return;
       const origin = typeof req.headers.origin === "string" ? req.headers.origin : "*";
       if (req.method === "OPTIONS") {
         json(res, 200, { ok: true }, origin);
@@ -591,6 +632,7 @@ async function stopServer(runtime: PluginRuntime): Promise<void> {
   runtime.lastShare = null;
   runtime.sessionTitles.clear();
   runtime.claims.clear();
+  runtime.tabContext.close();
 
   if (!server) return;
   await new Promise<void>((resolve, reject) => {

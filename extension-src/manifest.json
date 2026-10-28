@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "OpenCode Chrome Annotation",
   "short_name": "OpenCode Annotation",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Annotate pages and send context into your local OpenCode setup",
   "homepage_url": "https://github.com/asumaroks/opencode-chrome-annotation",
   "permissions": [
@@ -10,7 +10,8 @@
     "activeTab",
     "scripting",
     "storage",
-    "contextMenus"
+    "contextMenus",
+    "webNavigation"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",
@@ -32,6 +33,10 @@
   "background": {
     "service_worker": "background.js",
     "type": "module"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "action": {
     "default_title": "OpenCode Chrome Annotation",
